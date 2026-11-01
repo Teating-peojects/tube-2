@@ -1,0 +1,9 @@
+.git
+.env
+docs
+*.md
+bin
+tmp
+go.sandbox.*
+web
+node_modules

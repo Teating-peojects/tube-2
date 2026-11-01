@@ -1,0 +1,39 @@
+# Local-only overrides for this machine.
+#
+# The upstream docker-compose.yml references `minio/minio:latest` and `minio/mc:latest`,
+# which are not pullable from this environment's registry mirror. These are the same
+# upstream projects under names that resolve here:
+#
+#   elestio/minio:latest                  -> community MinIO (AGPLv3, no license needed)
+#   quay.io/minio/aistor/mc:latest        -> the `mc` client, used to create the bucket
+#
+# The AIStor MinIO server image was tried first but runs in offline mode without a
+# license, which denies all S3 operations, so the community build is used instead.
+#
+# This file is picked up automatically by `docker compose` in this directory.
+
+services:
+  minio:
+    image: elestio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:-redxtube-minio}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:-redxtube-minio-secret}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      MINIO_BROWSER: "on"
+
+  minio-init:
+    image: quay.io/minio/aistor/mc:latest
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        # Wait for MinIO to accept connections before creating the bucket.
+        until mc alias set local http://minio:9000 "$$STORAGE_ACCESS_KEY" "$$STORAGE_SECRET_KEY" >/dev/null 2>&1; do
+          echo "waiting for minio..."
+          sleep 2
+        done
+        mc mb --ignore-existing "local/$$STORAGE_BUCKET"
+        # The bucket stays PRIVATE: only the API's presigned URLs may write to it.
+        mc anonymous set none "local/$$STORAGE_BUCKET"
+        echo "bucket ready: $$STORAGE_BUCKET"

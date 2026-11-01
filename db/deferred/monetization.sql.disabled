@@ -1,0 +1,70 @@
+-- DEFERRED: monetization (do not apply until the feature is built).
+-- Note: the "subscriptions" table in the core schema means FOLLOWING a creator (free).
+-- Paid memberships are modelled separately so the two concepts never get mixed up.
+
+CREATE TYPE billing_interval AS ENUM ('MONTH', 'YEAR');
+CREATE TYPE paid_subscription_status AS ENUM ('ACTIVE', 'PAST_DUE', 'CANCELED', 'EXPIRED');
+CREATE TYPE transaction_type AS ENUM ('SUBSCRIPTION', 'TIP', 'REFUND', 'CHARGEBACK');
+CREATE TYPE transaction_status AS ENUM ('PENDING', 'SUCCEEDED', 'FAILED', 'REFUNDED');
+CREATE TYPE payout_status AS ENUM ('PENDING', 'PAID', 'FAILED');
+
+CREATE TABLE subscription_plans (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  creator_id  uuid NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+  name        text NOT NULL CHECK (char_length(btrim(name)) BETWEEN 1 AND 60),
+  price_minor integer NOT NULL CHECK (price_minor > 0),          -- smallest currency unit (cents)
+  currency    char(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
+  interval    billing_interval NOT NULL DEFAULT 'MONTH',
+  is_active   boolean NOT NULL DEFAULT true,
+  provider_plan_ref text,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX subscription_plans_by_creator ON subscription_plans (creator_id) WHERE is_active;
+
+CREATE TABLE creator_subscriptions (
+  id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id               uuid NOT NULL REFERENCES subscription_plans (id) ON DELETE RESTRICT,
+  subscriber_id         uuid NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+  status                paid_subscription_status NOT NULL DEFAULT 'ACTIVE',
+  provider_subscription_ref text,
+  current_period_end    timestamptz NOT NULL,
+  canceled_at           timestamptz,
+  created_at            timestamptz NOT NULL DEFAULT now(),
+  updated_at            timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX creator_subscriptions_one_active ON creator_subscriptions (subscriber_id, plan_id) WHERE status IN ('ACTIVE', 'PAST_DUE');
+CREATE INDEX creator_subscriptions_by_plan ON creator_subscriptions (plan_id, status);
+
+CREATE TABLE transactions (
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id          uuid NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+  creator_id       uuid REFERENCES users (id) ON DELETE RESTRICT,
+  subscription_id  uuid REFERENCES creator_subscriptions (id) ON DELETE RESTRICT,
+  type             transaction_type NOT NULL,
+  status           transaction_status NOT NULL DEFAULT 'PENDING',
+  amount_minor     bigint NOT NULL CHECK (amount_minor >= 0),
+  currency         char(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
+  provider_ref     text,                                            -- provider charge id; never card numbers
+  idempotency_key  text NOT NULL,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (idempotency_key)
+);
+CREATE INDEX transactions_by_user ON transactions (user_id, created_at DESC);
+CREATE INDEX transactions_by_creator ON transactions (creator_id, created_at DESC) WHERE creator_id IS NOT NULL;
+
+CREATE TABLE payouts (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  creator_id   uuid NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+  status       payout_status NOT NULL DEFAULT 'PENDING',
+  amount_minor bigint NOT NULL CHECK (amount_minor > 0),
+  currency     char(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
+  period_start date NOT NULL,
+  period_end   date NOT NULL,
+  provider_ref text,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  paid_at      timestamptz,
+  CHECK (period_end >= period_start),
+  CHECK ((status = 'PAID') = (paid_at IS NOT NULL))
+);
+CREATE INDEX payouts_by_creator ON payouts (creator_id, created_at DESC);

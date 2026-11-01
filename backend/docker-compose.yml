@@ -1,0 +1,146 @@
+# Local development stack (ports bound to 127.0.0.1 only).
+#   cd backend
+#   cp .env.example .env   # fill in the passwords and AUTH_SECRET
+#   docker compose up --build
+# Order: postgres -> bootstrap (roles) -> migrate (as redxtube_migrator) -> reference data -> api.
+name: redxtube
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${DB_NAME:-redxtube}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command: ["postgres", "-c", "password_encryption=scram-sha-256"]
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: [redisdata:/data]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot: create the least-privilege roles (idempotent) and set their passwords.
+  bootstrap:
+    image: postgres:16-alpine
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${DB_NAME:-redxtube}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
+      MIGRATOR_DB_PASSWORD: ${MIGRATOR_DB_PASSWORD:?set MIGRATOR_DB_PASSWORD in .env}
+    volumes: ["../db/bootstrap:/bootstrap:ro"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        psql -h postgres -U postgres -d postgres -v ON_ERROR_STOP=1 -v dbname="$$DB_NAME" -f /bootstrap/roles.sql
+        psql -h postgres -U postgres -d postgres -v ON_ERROR_STOP=1 \
+          -c "ALTER ROLE redxtube_app PASSWORD '$$APP_DB_PASSWORD'" \
+          -c "ALTER ROLE redxtube_migrator PASSWORD '$$MIGRATOR_DB_PASSWORD'"
+    restart: "no"
+
+  # Migrations MUST run as redxtube_migrator (not postgres): the API role's privileges come from
+  # default privileges that only apply to objects the migrator creates.
+  migrate:
+    image: migrate/migrate:v4.17.1
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+    volumes: ["../db/migrations:/migrations:ro"]
+    command: ["-path=/migrations", "-database=postgres://redxtube_migrator:${MIGRATOR_DB_PASSWORD}@postgres:5432/${DB_NAME:-redxtube}?sslmode=disable", "up"]
+    restart: "no"
+
+  # Categories are required reference data (a video cannot be published without one).
+  reference-data:
+    image: postgres:16-alpine
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment:
+      PGPASSWORD: ${MIGRATOR_DB_PASSWORD}
+    volumes: ["../db/seeds:/seeds:ro"]
+    entrypoint: ["psql", "-h", "postgres", "-U", "redxtube_migrator", "-d", "${DB_NAME:-redxtube}", "-v", "ON_ERROR_STOP=1", "-f", "/seeds/reference_data.sql"]
+    restart: "no"
+
+  # S3-compatible storage for local dev. Start with: docker compose --profile storage up --build
+  # and set STORAGE_ENDPOINT=http://minio:9000 STORAGE_PUBLIC_ENDPOINT=http://localhost:9000 in .env.
+  # The browser PUTs upload parts straight to MinIO, so MinIO must allow your web origin (CORS).
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:-redxtube-minio}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:-redxtube-minio-secret}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
+    volumes: [miniodata:/data]
+    profiles: ["storage"]
+
+  # One-shot: create the bucket (idempotent). The bucket stays PRIVATE; only thumbs/ captions/ hls/
+  # are meant to be public, serve those through your CDN, never make uploads/ public.
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    environment:
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-redxtube-minio}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-redxtube-minio-secret}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-redxtube}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$STORAGE_ACCESS_KEY" "$$STORAGE_SECRET_KEY"
+        mc mb --ignore-existing "local/$$STORAGE_BUCKET"
+    profiles: ["storage"]
+    restart: "no"
+
+  api:
+    build: .
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      PORT: "8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgres://redxtube_app:${APP_DB_PASSWORD}@postgres:5432/${DB_NAME:-redxtube}?sslmode=disable
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      CDN_URL: ${CDN_URL:-}
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-xh_session}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      MAIL_DRIVER: ${MAIL_DRIVER:-log}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-REDXTUBE <no-reply@redxtube.com>}
+      # Uploads: leave STORAGE_ENDPOINT empty to disable them (the endpoints then answer 503 uploads_disabled).
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-}
+      STORAGE_PUBLIC_ENDPOINT: ${STORAGE_PUBLIC_ENDPOINT:-}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+      STORAGE_PATH_STYLE: ${STORAGE_PATH_STYLE:-}
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      redis: { condition: service_healthy }
+      reference-data: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:

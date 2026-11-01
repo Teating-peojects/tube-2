@@ -1,0 +1,13 @@
+DROP TABLE IF EXISTS video_search;
+DROP TABLE IF EXISTS video_processing_jobs;
+DROP TABLE IF EXISTS upload_sessions;
+DROP TABLE IF EXISTS video_captions;
+DROP TABLE IF EXISTS video_thumbnails;
+DROP TABLE IF EXISTS video_variants;
+DROP TABLE IF EXISTS video_metadata;
+DROP TABLE IF EXISTS video_tags;
+DROP TABLE IF EXISTS video_stats;
+DROP VIEW IF EXISTS public_videos;
+DROP TABLE IF EXISTS videos;
+DROP TABLE IF EXISTS tags;
+DROP TABLE IF EXISTS categories;

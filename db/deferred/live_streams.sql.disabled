@@ -1,0 +1,20 @@
+-- DEFERRED: live streaming (needs an RTMP/SRT ingest + LL-HLS pipeline first).
+CREATE TYPE live_status AS ENUM ('SCHEDULED', 'LIVE', 'ENDED', 'CANCELED');
+
+CREATE TABLE live_streams (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  creator_id    uuid NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+  title         text NOT NULL CHECK (char_length(btrim(title)) BETWEEN 1 AND 100),
+  status        live_status NOT NULL DEFAULT 'SCHEDULED',
+  stream_key_hash bytea NOT NULL CHECK (octet_length(stream_key_hash) = 32),   -- never store the raw key
+  hls_master_key text,
+  scheduled_at  timestamptz,
+  started_at    timestamptz,
+  ended_at      timestamptz,
+  recording_video_id uuid REFERENCES videos (id) ON DELETE SET NULL,
+  peak_viewers  integer NOT NULL DEFAULT 0 CHECK (peak_viewers >= 0),
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  CHECK (ended_at IS NULL OR started_at IS NULL OR ended_at >= started_at)
+);
+CREATE INDEX live_streams_now ON live_streams (started_at DESC) WHERE status = 'LIVE';
+CREATE INDEX live_streams_by_creator ON live_streams (creator_id, created_at DESC);

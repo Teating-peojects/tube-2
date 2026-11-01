@@ -1,0 +1,10 @@
+DROP FUNCTION IF EXISTS purge_old_audit_logs(integer, integer);
+DROP FUNCTION IF EXISTS purge_old_notifications(integer);
+DROP FUNCTION IF EXISTS purge_old_search_history(integer, integer);
+DROP FUNCTION IF EXISTS purge_expired_verification_tokens(integer);
+DROP FUNCTION IF EXISTS purge_expired_sessions(integer);
+DROP FUNCTION IF EXISTS recount_tag_usage();
+DROP FUNCTION IF EXISTS recount_comment_counters(uuid);
+DROP FUNCTION IF EXISTS recount_creator_counters(uuid);
+DROP FUNCTION IF EXISTS recount_video_counters(uuid);
+DROP FUNCTION IF EXISTS refresh_video_search(uuid);

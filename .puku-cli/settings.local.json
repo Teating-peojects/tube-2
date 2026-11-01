@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose:*)",
+      "Bash(docker run:*)",
+      "Bash(docker image:*)",
+      "Bash(docker volume:*)",
+      "Bash(curl:*)",
+      "Bash(docker exec:*)",
+      "Bash(grep -rn 'mux.HandleFunc' /f/redxtube-updated/backend/internal/handler/*.go)",
+      "Bash(grep -rn 'const v = ' /f/redxtube-updated/backend/internal/handler/*.go)",
+      "Bash(npm run:*)",
+      "Bash(grep -oE '<title>[^<]*</title>|18[^<]{0,40}|Sign in|Create account')",
+      "Bash(ps:*)",
+      "Bash(netstat -ano)",
+      "Bash(git ls-remote:*)",
+      "Bash(gh auth:*)",
+      "Bash(du -sh */)",
+      "Bash(git check-ignore:*)",
+      "Bash(echo \"--- exit: $?---\")",
+      "Bash(find . -name .env* -not -path ./node_modules/*)",
+      "Bash(find . -type f -not -path */node_modules/* -not -path */.next/* -size +10M)",
+      "Bash(git init:*)",
+      "Bash(git config:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

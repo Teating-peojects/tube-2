@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS search_history;
+DROP TABLE IF EXISTS notifications;
+DROP TABLE IF EXISTS not_interested;
+DROP TABLE IF EXISTS blocked_users;
+DROP TABLE IF EXISTS watch_later;
+DROP TABLE IF EXISTS playlist_videos;
+DROP TABLE IF EXISTS playlists;
+DROP TABLE IF EXISTS subscriptions;
+DROP TABLE IF EXISTS comment_reactions;
+DROP TABLE IF EXISTS comments;
+DROP TABLE IF EXISTS video_reactions;
+DROP TABLE IF EXISTS watch_history;

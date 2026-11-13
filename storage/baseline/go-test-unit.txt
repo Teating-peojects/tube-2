@@ -1,0 +1,25 @@
+?   	github.com/redxtube/api/cmd/api	[no test files]
+?   	github.com/redxtube/api/cmd/devpass	[no test files]
+?   	github.com/redxtube/api/internal/apperr	[no test files]
+ok  	github.com/redxtube/api/internal/auth	0.312s
+?   	github.com/redxtube/api/internal/cache	[no test files]
+ok  	github.com/redxtube/api/internal/captions	0.002s
+ok  	github.com/redxtube/api/internal/config	0.002s
+?   	github.com/redxtube/api/internal/db	[no test files]
+?   	github.com/redxtube/api/internal/db/models	[no test files]
+?   	github.com/redxtube/api/internal/db/repo	[no test files]
+ok  	github.com/redxtube/api/internal/handler	0.005s
+ok  	github.com/redxtube/api/internal/httpx	0.003s
+ok  	github.com/redxtube/api/internal/mail	0.058s
+ok  	github.com/redxtube/api/internal/media	0.001s
+?   	github.com/redxtube/api/internal/middleware	[no test files]
+?   	github.com/redxtube/api/internal/model	[no test files]
+ok  	github.com/redxtube/api/internal/pagination	0.002s
+ok  	github.com/redxtube/api/internal/playback	0.001s
+ok  	github.com/redxtube/api/internal/ratelimit	0.002s
+?   	github.com/redxtube/api/internal/realtime	[no test files]
+?   	github.com/redxtube/api/internal/repository	[no test files]
+ok  	github.com/redxtube/api/internal/server	0.003s
+ok  	github.com/redxtube/api/internal/service	0.004s
+ok  	github.com/redxtube/api/internal/storage	0.908s
+ok  	github.com/redxtube/api/internal/ws	0.807s

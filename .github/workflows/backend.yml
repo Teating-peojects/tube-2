@@ -32,6 +32,9 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
+      - name: Install ffmpeg (media worker tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: gofmt
         working-directory: backend
         run: |

@@ -20,12 +20,14 @@ import (
 	"github.com/redxtube/api/internal/mail"
 	"github.com/redxtube/api/internal/media"
 	"github.com/redxtube/api/internal/middleware"
+	"github.com/redxtube/api/internal/playback"
 	"github.com/redxtube/api/internal/ratelimit"
 	"github.com/redxtube/api/internal/realtime"
 	"github.com/redxtube/api/internal/repository"
 	"github.com/redxtube/api/internal/server"
 	"github.com/redxtube/api/internal/service"
 	"github.com/redxtube/api/internal/storage"
+	"github.com/redxtube/api/internal/stream"
 	"github.com/redxtube/api/internal/ws"
 )
 
@@ -91,7 +93,8 @@ func run() error {
 	limiter := ratelimit.New(rdb, "rl:")
 	authSvc := service.NewAuth(repository.NewAuth(pool), auth.NewHasher(8), limiter, asyncMail, cfg.AuthSecret, urls, cfg.AppURL, log)
 	socialRepo := repository.NewSocial(pool)
-	catalogSvc := service.NewCatalog(repository.NewCatalog(pool), urls).WithViewerData(socialRepo)
+	catalogRepo := repository.NewCatalog(pool)
+	catalogSvc := service.NewCatalog(catalogRepo, urls).WithViewerData(socialRepo)
 	socialSvc := service.NewSocial(socialRepo, catalogSvc, limiter, auth.DeriveKeys(cfg.AuthSecret).IP, log)
 	// A nil storage.API (not a typed nil) is what switches uploads off.
 	var store storage.API
@@ -104,6 +107,24 @@ func run() error {
 		store = c
 	} else {
 		log.Warn("STORAGE_* not set: upload endpoints answer 503 uploads_disabled")
+	}
+	// B7: signed HLS. Without STREAM_BASE_URL the plain CDN URL is used (development only).
+	var streamHandler http.Handler
+	if cfg.StreamBaseURL != "" {
+		key := cfg.PlaybackKey
+		if len(key) == 0 {
+			key = auth.DeriveKeys(cfg.AuthSecret).Playback
+		}
+		signer, err := playback.NewSigner(key, cfg.StreamBaseURL, playback.DefaultTTL)
+		if err != nil {
+			return fmt.Errorf("playback: %w", err)
+		}
+		catalogSvc = catalogSvc.WithPlayback(signer)
+		if store != nil {
+			streamHandler = stream.New(key, store, catalogRepo.VideoServable, log)
+		} else {
+			log.Warn("STREAM_BASE_URL is set but STORAGE_* is not: stream URLs are issued but nothing serves them")
+		}
 	}
 	bus := realtime.NewBus(rdb, log)
 	hub := ws.NewHub()
@@ -124,6 +145,7 @@ func run() error {
 			Auth:    &handler.Auth{Svc: authSvc, Cookies: cookies, TrustProxy: cfg.TrustProxyHeaders},
 			Authn:   middleware.Authenticate(authSvc, cookies),
 			Catalog: &handler.Catalog{Svc: catalogSvc},
+			Stream:  streamHandler,
 			Social:  &handler.Social{Svc: socialSvc, TrustProxy: cfg.TrustProxyHeaders},
 			Upload:  &handler.Upload{Svc: uploadSvc, TrustProxy: cfg.TrustProxyHeaders},
 

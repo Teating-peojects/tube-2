@@ -1,9 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/redxtube/api/internal/playback"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -451,5 +454,44 @@ func TestNormalizeQuery(t *testing.T) {
 		if got := normalizeQuery(in); got != want {
 			t.Errorf("normalizeQuery(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestVideoDetailSignedStream(t *testing.T) {
+	sg, err := playback.NewSigner(bytes.Repeat([]byte("k"), 32), "https://stream.test/stream", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := rows(1)[0]
+	row.ID = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
+	f := &fakeStore{detail: &repository.VideoDetailRow{VideoRow: row}}
+	s := newSvc(f).WithPlayback(sg)
+	ctx := context.Background()
+
+	key := "hls/" + row.ID + "/master.m3u8"
+	f.detail.HLSKey = &key
+	d, err := s.VideoDetail(ctx, row.ID, nil)
+	if err != nil || d.StreamURL == nil {
+		t.Fatalf("%v %v", err, d.StreamURL)
+	}
+	u, _ := url.Parse(*d.StreamURL)
+	if u.Host != "stream.test" || !strings.HasSuffix(u.Path, "/hls/"+row.ID+"/master.m3u8") || strings.Contains(*d.StreamURL, "cdn.test") {
+		t.Fatalf("not a signed stream URL: %s", *d.StreamURL)
+	}
+	tok := strings.Split(strings.TrimPrefix(u.Path, "/stream/"), "/")[0]
+	if _, err := playback.Verify(bytes.Repeat([]byte("k"), 32), tok, key, time.Now()); err != nil {
+		t.Fatalf("issued token does not verify: %v", err)
+	}
+	// a key that is not servable HLS (an original, another video's playlist) never produces a URL
+	for _, bad := range []string{"uploads/" + row.ID + "/original.mp4", "hls/0190aaaa-bbbb-7ccc-8ddd-111111111111/master.m3u8", ""} {
+		bad := bad
+		f.detail.HLSKey = &bad
+		if d, _ := s.VideoDetail(ctx, row.ID, nil); d.StreamURL != nil {
+			t.Errorf("stream URL issued for key %q", bad)
+		}
+	}
+	f.detail.HLSKey = nil
+	if d, _ := s.VideoDetail(ctx, row.ID, nil); d.StreamURL != nil {
+		t.Error("stream URL for an unprocessed video")
 	}
 }

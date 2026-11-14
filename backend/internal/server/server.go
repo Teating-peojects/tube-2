@@ -5,6 +5,7 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/redxtube/api/internal/apperr"
@@ -33,6 +34,8 @@ type Deps struct {
 	Realtime      *handler.Realtime
 	// Admin serves moderation and administration (needs Auth); nil disables it.
 	Admin *handler.Admin
+	// Stream serves signed HLS objects at /stream/{token}/{key...} (B7); nil disables it.
+	Stream http.Handler
 	// Authn resolves the session cookie on every request (required when Auth is set).
 	Authn httpx.Middleware
 }
@@ -74,6 +77,10 @@ func New(d Deps) http.Handler {
 		d.Admin.Routes(mux)
 	}
 
+	if d.Stream != nil {
+		mux.Handle("GET /stream/{token}/{key...}", d.Stream)
+	}
+
 	mux.HandleFunc("/", httpx.Handle(func(w http.ResponseWriter, r *http.Request) error {
 		return apperr.NotFound("not_found", "Resource not found")
 	}))
@@ -88,7 +95,22 @@ func New(d Deps) http.Handler {
 		httpx.BodyLimit(d.Cfg.MaxBodyBytes),
 	}
 	if d.Authn != nil {
-		chain = append(chain, d.Authn)
+		chain = append(chain, skipUnder("/stream/", d.Authn))
 	}
 	return httpx.Chain(mux, chain...)
+}
+
+// skipUnder applies mw to every request except those under prefix. The stream is authorised by its
+// URL token, so segment requests must not cost a session lookup each.
+func skipUnder(prefix string, mw httpx.Middleware) httpx.Middleware {
+	return func(next http.Handler) http.Handler {
+		with := mw(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, prefix) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			with.ServeHTTP(w, r)
+		})
+	}
 }

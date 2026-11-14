@@ -39,7 +39,7 @@ func GenerateOTP() string {
 
 // Keys are per-purpose secrets derived from the master AUTH_SECRET so that a
 // value signed for one purpose can never be replayed for another.
-type Keys struct{ Age, OTP, IP []byte }
+type Keys struct{ Age, OTP, IP, Playback []byte }
 
 func DeriveKeys(master []byte) Keys {
 	d := func(label string) []byte {
@@ -47,7 +47,7 @@ func DeriveKeys(master []byte) Keys {
 		m.Write([]byte("redxtube/v1/" + label))
 		return m.Sum(nil)
 	}
-	return Keys{Age: d("age-cookie"), OTP: d("email-otp"), IP: d("ip-hash")}
+	return Keys{Age: d("age-cookie"), OTP: d("email-otp"), IP: d("ip-hash"), Playback: d("playback-token")}
 }
 
 // OTPDigest is the digest of a 6-digit email code. A plain hash of 6 digits

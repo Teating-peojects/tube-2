@@ -68,6 +68,25 @@ HEVC, VP8, VP9, AV1.
   a PID limit and CPU/RAM limits. Keep the worker on a network that can only reach PostgreSQL, Redis
   and the object store.
 
+## Upload scanning (malware / CSAM hook)
+
+REDXTUBE does not bundle a CSAM or malware engine: hash-matching services (PhotoDNA, CSAI Match,
+Cloudflare's CSAM tool, NCMEC hash lists) need a vendor agreement and credentials. The worker has the
+integration point instead:
+
+* `SCANNER_COMMAND` runs any program on every original, **before ffprobe**. `{file}` is replaced by the
+  path (no shell, so file names cannot inject commands). Exit `0` = clean, `1` = match, anything else
+  (crash, missing binary, timeout) = scanner failure. Example: `clamscan --no-summary {file}`.
+* **Fail-closed**: a failing scanner retries with backoff and, when attempts run out, the video
+  `FAILED`s. Nothing unscanned is published while a scanner is configured.
+* A match sets `moderation_status = REMOVED`, writes `moderation.scan_match` to `audit_logs` and fails
+  the job permanently without notifying the uploader. The original is left in storage (evidence).
+* Without `SCANNER_COMMAND` the worker logs a warning in production. For a real deployment write a small
+  wrapper script that calls your vendor's API and maps its verdict to the exit codes above; or implement
+  `worker.Scanner` in Go for direct integration.
+* Every ffmpeg, ffprobe and scanner child runs in its own process group that is killed on timeout or
+  shutdown, so a hung process (and anything it spawned) cannot outlive its job.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -80,6 +99,8 @@ HEVC, VP8, VP9, AV1.
 | `WORKER_WORKDIR` | `/work` | scratch space: needs about 2x the largest original |
 | `WORKER_POLL_INTERVAL` / `WORKER_STALE_AFTER` / `WORKER_SHUTDOWN_GRACE` | 3s / 2m / 30s | durations |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | `ffmpeg`, `ffprobe` | binaries |
+| `SCANNER_COMMAND` | empty | upload scanner, see above |
+| `METRICS_ADDR` | empty | `host:port` for `/metrics`, internal only ([observability.md](observability.md)) |
 
 Scale by adding replicas, not by raising `WORKER_CONCURRENCY`: ffmpeg already uses all cores.
 
@@ -102,5 +123,5 @@ pipeline against fake storage; with `TEST_ADMIN_DATABASE_URL` + `TEST_WORKER_DAT
 
 * A blocked-hash original is left in storage untouched (evidence). Whether to delete it, quarantine it
   or report it is a legal/policy decision for you.
-* No metrics endpoint yet: queue depth, failures and encode time are visible in the logs and in
-  `video_processing_jobs`. Prometheus metrics belong to B10.
+* Which scanner to use, and what to do on a match beyond removal (report, preserve, delete), is yours
+  to decide with your legal advisers.

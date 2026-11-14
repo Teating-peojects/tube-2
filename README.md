@@ -130,4 +130,5 @@ Handler -> Service -> Repository -> Database. No business logic in handlers.
 | B7 Playback (signed HLS) | done: signed 6 h stream URLs from `GET /videos/{id}`, token-verifying stream handler with takedown gate, tokens never logged, tested end to end with a real ffmpeg player: [backend/docs/playback.md](backend/docs/playback.md) |
 | B8 Notifications + Studio + realtime | done: inbox, unread count, Studio overview/analytics/videos/comments, WebSocket over Redis pub/sub |
 | B9 Moderation + admin | done (API only, no UI): report queue, actions, restore, users, audit, hash blocklist, auto-restrict |
-| B10 Hardening | partly: upload verification, consent, hash blocklist trigger, suspension expiry, CI for Go. Still open: worker container sandbox review, malware/CSAM scanning integration, load tests |
+| B10 Hardening | done in code: upload verification, consent, hash blocklist, suspension expiry, CI, **fail-closed upload scanner hook**, child-process-group kill, **Prometheus metrics** (API + worker), **OpenAPI** generated from the routes, **k6 load test**: [backend/docs/observability.md](backend/docs/observability.md). Still open: plugging in a real CSAM/malware engine (needs a vendor agreement), running the load test on staging, a container/seccomp review |
+| Moderation / admin UI | not built: the admin API exists (B9), there is no screen for it yet |

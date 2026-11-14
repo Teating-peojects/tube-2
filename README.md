@@ -127,7 +127,7 @@ Handler -> Service -> Repository -> Database. No business logic in handlers.
 | B4 Social | done: reactions, subscriptions, comments (pin, replies, review mode), views/progress/history, watch later, liked, playlists, block / not interested, reports |
 | B5 Upload | done: direct-to-storage multipart, server-side verification, drafts, thumbnails, captions, consent record, publish |
 | B6 FFmpeg-HLS worker | done: `cmd/worker` (METADATA, THUMBNAIL, TRANSCODE, HLS) on the PostgreSQL job queue, 360p-1080p HLS, tested with real ffmpeg, PostgreSQL and an S3 API: [backend/docs/worker.md](backend/docs/worker.md) |
-| B7 Playback (signed HLS) | not wired: `internal/playback` exists but is unused |
+| B7 Playback (signed HLS) | done: signed 6 h stream URLs from `GET /videos/{id}`, token-verifying stream handler with takedown gate, tokens never logged, tested end to end with a real ffmpeg player: [backend/docs/playback.md](backend/docs/playback.md) |
 | B8 Notifications + Studio + realtime | done: inbox, unread count, Studio overview/analytics/videos/comments, WebSocket over Redis pub/sub |
 | B9 Moderation + admin | done (API only, no UI): report queue, actions, restore, users, audit, hash blocklist, auto-restrict |
 | B10 Hardening | partly: upload verification, consent, hash blocklist trigger, suspension expiry, CI for Go. Still open: worker container sandbox review, malware/CSAM scanning integration, load tests |

@@ -139,6 +139,9 @@ services:
       STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-}
       STORAGE_BUCKET: ${STORAGE_BUCKET:-}
       STORAGE_PATH_STYLE: ${STORAGE_PATH_STYLE:-}
+      # B7: signed HLS. Local default points at this API.
+      STREAM_BASE_URL: ${STREAM_BASE_URL:-http://localhost:8080/stream}
+      PLAYBACK_SIGNING_KEY: ${PLAYBACK_SIGNING_KEY:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       redis: { condition: service_healthy }

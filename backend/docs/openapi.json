@@ -3643,6 +3643,72 @@
         ]
       }
     },
+    "/api/v1/upload/{id}/retry": {
+      "post": {
+        "description": "Not described in api-contract.md yet.",
+        "operationId": "postUploadIdRetry",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "POST /upload/{id}/retry",
+        "tags": [
+          "upload"
+        ],
+        "x-handler": "retry",
+        "x-requires": [
+          "verified email"
+        ]
+      }
+    },
     "/api/v1/upload/{id}/status": {
       "get": {
         "description": "Not described in api-contract.md yet.",

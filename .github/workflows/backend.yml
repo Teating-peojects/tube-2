@@ -55,9 +55,18 @@ jobs:
 
       - name: Unit + integration tests
         working-directory: backend
+        shell: bash
         run: |
           source "$RUNNER_TEMP/test-env.sh"
-          go test -race -count=1 ./...
+          go test -race -count=1 ./... 2>&1 | tee "$RUNNER_TEMP/go-test.log"
+
+      # Surface failing tests as annotations: visible on the PR and through the API without log access.
+      - name: Annotate failing tests
+        if: failure()
+        shell: bash
+        run: |
+          grep -E '^(--- FAIL|FAIL|panic:)|_test\.go:[0-9]+:' "$RUNNER_TEMP/go-test.log" | head -40 \
+            | while IFS= read -r l; do echo "::error title=go test::${l:0:400}"; done || true
 
       - name: Build binaries
         working-directory: backend

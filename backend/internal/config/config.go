@@ -34,6 +34,14 @@ type StorageConfig struct {
 	PathStyle      bool
 }
 
+// UploadConfig holds the tunable upload limits. Defaults equal the previous constants.
+type UploadConfig struct {
+	MaxBytes   int64         // UPLOAD_MAX_BYTES, 1 MiB..5 GiB (database cap)
+	PartSize   int64         // UPLOAD_PART_SIZE_BYTES, 5 MiB..1 GiB (at most 1,024 parts per file)
+	MaxOpen    int           // UPLOAD_MAX_OPEN, unfinished uploads per user, 1..50
+	SessionTTL time.Duration // UPLOAD_SESSION_TTL, 1h..168h
+}
+
 // Enabled reports whether uploads are configured.
 func (s StorageConfig) Enabled() bool { return s.Endpoint != "" }
 
@@ -58,6 +66,7 @@ type Config struct {
 	TrustProxyHeaders   bool   // honour CF-Connecting-IP / X-Forwarded-For (only behind a trusted proxy)
 	Mail                MailConfig
 	Storage             StorageConfig
+	Upload              UploadConfig
 }
 
 func (c Config) IsProduction() bool { return c.Env == "production" }
@@ -257,6 +266,41 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 	c.Storage = st
+
+	// ----- upload limits -----
+	up := UploadConfig{MaxBytes: 5 << 30, PartSize: 16 << 20, MaxOpen: 5, SessionTTL: 24 * time.Hour}
+	int64Env := func(name string, dst *int64, lo, hi int64) {
+		v := get(name, "")
+		if v == "" {
+			return
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < lo || n > hi {
+			fail("%s must be a whole number of bytes between %d and %d (got %q)", name, lo, hi, v)
+			return
+		}
+		*dst = n
+	}
+	int64Env("UPLOAD_MAX_BYTES", &up.MaxBytes, 1<<20, 5<<30)
+	int64Env("UPLOAD_PART_SIZE_BYTES", &up.PartSize, 5<<20, 1<<30)
+	if v := get("UPLOAD_MAX_OPEN", ""); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 50 {
+			fail("UPLOAD_MAX_OPEN must be 1-50 (got %q)", v)
+		} else {
+			up.MaxOpen = n
+		}
+	}
+	if v := get("UPLOAD_SESSION_TTL", ""); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Hour || d > 168*time.Hour {
+			fail("UPLOAD_SESSION_TTL must be a duration between 1h and 168h, e.g. 24h (got %q)", v)
+		} else {
+			up.SessionTTL = d
+		}
+	}
+	// With the bounds above a file needs at most 5 GiB / 5 MiB = 1,024 parts, far below S3's 10,000-part limit.
+	c.Upload = up
 
 	if c.DatabaseURL == "" {
 		fail("DATABASE_URL is required")

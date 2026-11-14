@@ -70,3 +70,13 @@ says the frontend is the source of truth), so this audit maps the document onto 
 ## 4. Verdict (as of this audit)
 Phase 5 status: **PARTIALLY COMPLETE**. Core upload flow is implemented and unit-verified; retry, configurable
 limits, full cleanup, metrics, storage health, OpenAPI, upload integration tests and MinIO verification are open.
+
+## 5. Status changes after Phase B (2026-11-14)
+| Row | Before | Now |
+|---|---|---|
+| 7.1-7.2 allowlist | `.mp4 .mov .mkv .webm .avi` | `.mp4 .m4v .mov .mkv .webm`; AVI signature removed; covered by `TestInitAcceptsAllowedFormats`, `TestInitValidation`, `TestValidContainer` |
+| 7.2 configurable limits | PARTIAL (constants) | IMPLEMENTED (unit): max size, part size, open uploads and session TTL via `UPLOAD_*`; validated at startup (`TestUploadLimitsRejectBadValues`) and applied by the service (`TestInitUsesConfiguredLimits`). Still constants: rate limits, presign TTL for assets, thumbnail/caption limits |
+| 8 creator eligibility | needs decision | Decided: no approval, automatic (unchanged behaviour) |
+| 8 age gate per request | needs decision | Unchanged; open, low priority |
+| 11 env validation | IMPLEMENTED (unit) | extended to the four upload variables |
+Phase 5 overall: still **PARTIALLY COMPLETE** (retry, cleanup, metrics, integration tests, OpenAPI, MinIO verification open).

@@ -109,7 +109,8 @@ func run() error {
 	hub := ws.NewHub()
 	go bus.Run(ctx, hub)
 	ipKey := auth.DeriveKeys(cfg.AuthSecret).IP
-	uploadSvc := service.NewUpload(repository.NewUpload(pool), store, limiter, ipKey, urls, bus, log)
+	uploadSvc := service.NewUpload(repository.NewUpload(pool), store, limiter, ipKey, urls, bus, log).WithLimits(service.UploadLimits{
+		MaxBytes: cfg.Upload.MaxBytes, PartSize: cfg.Upload.PartSize, MaxOpen: cfg.Upload.MaxOpen, SessionTTL: cfg.Upload.SessionTTL})
 	notifRepo := repository.NewNotifications(pool)
 	notifSvc := service.NewNotifications(notifRepo, limiter, log)
 	adminSvc := service.NewAdmin(repository.NewAdmin(pool), limiter, ipKey, log)

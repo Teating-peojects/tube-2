@@ -1,8 +1,7 @@
 # Remaining tasks (ordered)
 
-1. Decide: per-request age gate on upload routes, and creator approval (audit rows "Age" and "Creator").
-2. Decide: keep `.avi`? Document MKV/WebM/MOV/MP4 as the allowlist?
-3. Make limits configurable (Phase B).
+1. ~~Creator approval~~ decided: none. ~~`.avi`~~ decided: dropped, `.m4v` added. ~~Configurable limits~~ done (Phase B).
+2. Open, low priority: per-request age gate on upload routes (age is verified at registration only).
 4. Add the retry endpoint, retry counter and limit (Phase C).
 5. Extend cleanup: orphans, retention, metrics, storage health (Phase D).
 6. Verify/fill frontend: ETA, `beforeunload`, network loss, e2e (Phase E).

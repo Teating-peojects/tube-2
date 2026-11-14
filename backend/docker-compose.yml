@@ -134,6 +134,10 @@ services:
       STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-}
       STORAGE_BUCKET: ${STORAGE_BUCKET:-}
       STORAGE_PATH_STYLE: ${STORAGE_PATH_STYLE:-}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-}
+      UPLOAD_PART_SIZE_BYTES: ${UPLOAD_PART_SIZE_BYTES:-}
+      UPLOAD_MAX_OPEN: ${UPLOAD_MAX_OPEN:-}
+      UPLOAD_SESSION_TTL: ${UPLOAD_SESSION_TTL:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       redis: { condition: service_healthy }

@@ -19,6 +19,11 @@ describe("upload validation", () => {
     expect(validateVideoFile(file("a.txt", "text/plain", 10))).toMatch(/Unsupported format/);
     expect(validateVideoFile(file("a.mp4", "video/mp4", 0))).toMatch(/empty/);
   });
+  it("accepts mp4, m4v, mov, mkv and webm; avi and other legacy formats are not allowed", () => {
+    for (const n of ["a.mp4", "a.m4v", "a.MOV", "a.mkv", "a.webm"]) expect(validateVideoFile(file(n, "video/x", 1000))).toBeNull();
+    for (const n of ["a.avi", "a.flv", "a.wmv"]) expect(validateVideoFile(file(n, "video/x", 1000))).toMatch(/Unsupported format/);
+    expect(uploadLimits.extensions).toEqual([".mp4", ".m4v", ".mov", ".mkv", ".webm"]);
+  });
   it("validates thumbnails and captions", () => {
     expect(validateImage(file("t.png", "image/png", 1000))).toBeNull();
     expect(validateImage(file("t.gif", "image/gif", 1000))).toMatch(/JPG, PNG or WebP/);

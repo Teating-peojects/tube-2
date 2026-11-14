@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func env(m map[string]string) func(string) string {
@@ -184,5 +185,51 @@ func TestStorageHTTPSRequiredInProduction(t *testing.T) {
 	m["STORAGE_PUBLIC_ENDPOINT"] = "https://files.example.com"
 	if _, err := Load(env(m)); err != nil {
 		t.Fatalf("valid production storage rejected: %v", err)
+	}
+}
+
+func TestUploadLimitsDefaultsAndOverrides(t *testing.T) {
+	c, err := Load(env(devBase()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := c.Upload; u.MaxBytes != 5<<30 || u.PartSize != 16<<20 || u.MaxOpen != 5 || u.SessionTTL != 24*time.Hour {
+		t.Fatalf("defaults changed: %+v", u)
+	}
+	m := devBase()
+	m["UPLOAD_MAX_BYTES"] = "1073741824"
+	m["UPLOAD_PART_SIZE_BYTES"] = "8388608"
+	m["UPLOAD_MAX_OPEN"] = "3"
+	m["UPLOAD_SESSION_TTL"] = "48h"
+	c, err = Load(env(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := c.Upload; u.MaxBytes != 1<<30 || u.PartSize != 8<<20 || u.MaxOpen != 3 || u.SessionTTL != 48*time.Hour {
+		t.Fatalf("overrides not applied: %+v", u)
+	}
+}
+
+func TestUploadLimitsRejectBadValues(t *testing.T) {
+	bad := map[string][]string{
+		"UPLOAD_MAX_BYTES":       {"abc", "0", "1048575", "5368709121"},
+		"UPLOAD_PART_SIZE_BYTES": {"1048576", "5242879", "1073741825", "-1"},
+		"UPLOAD_MAX_OPEN":        {"0", "51", "many"},
+		"UPLOAD_SESSION_TTL":     {"30m", "169h", "soon", "0"},
+	}
+	for name, values := range bad {
+		for _, v := range values {
+			m := devBase()
+			m[name] = v
+			if _, err := Load(env(m)); err == nil || !strings.Contains(err.Error(), name) {
+				t.Errorf("%s=%q should be rejected naming the variable, got %v", name, v, err)
+			}
+		}
+	}
+	// Boundary values are accepted.
+	m := devBase()
+	m["UPLOAD_MAX_BYTES"], m["UPLOAD_PART_SIZE_BYTES"], m["UPLOAD_MAX_OPEN"], m["UPLOAD_SESSION_TTL"] = "5368709120", "5242880", "50", "168h"
+	if _, err := Load(env(m)); err != nil {
+		t.Errorf("boundary values rejected: %v", err)
 	}
 }

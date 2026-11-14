@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -43,10 +44,37 @@ var (
 	errStorage        = apperr.New(http.StatusBadGateway, "storage_unavailable", "Storage is temporarily unavailable, try again")
 )
 
+// UploadLimits are the tunable upload limits (UPLOAD_* environment variables, see config.UploadConfig).
+// DefaultUploadLimits equals the former hard-coded constants, so behaviour only changes when they are set.
+type UploadLimits struct {
+	MaxBytes   int64         // largest accepted video (the database caps it at 5 GiB)
+	PartSize   int64         // bytes per multipart part (S3 minimum 5 MiB)
+	MaxOpen    int           // unfinished uploads one user may hold
+	SessionTTL time.Duration // how long an upload session stays open
+}
+
+func DefaultUploadLimits() UploadLimits {
+	return UploadLimits{MaxBytes: MaxUploadBytes, PartSize: UploadPartSize, MaxOpen: MaxOpenUploads, SessionTTL: UploadTTL}
+}
+
+// presignPartTTL keeps presigned part URLs valid for half the session, always shorter than the session itself.
+func (l UploadLimits) presignPartTTL() time.Duration { return l.SessionTTL / 2 }
+
+// sizeText renders a byte count for validation messages ("5 GiB", "200 MiB").
+func sizeText(b int64) string {
+	switch {
+	case b >= 1<<30 && b%(1<<30) == 0:
+		return fmt.Sprintf("%d GiB", b>>30)
+	case b >= 1<<20:
+		return fmt.Sprintf("%d MiB", b>>20)
+	}
+	return fmt.Sprintf("%d bytes", b)
+}
+
 // containerByExt maps the allowed extensions to the content type given to storage.
 // The client's own Content-Type is never trusted or stored.
 var containerByExt = map[string]string{
-	".mp4": "video/mp4", ".mov": "video/quicktime", ".mkv": "video/x-matroska", ".webm": "video/webm", ".avi": "video/x-msvideo",
+	".mp4": "video/mp4", ".m4v": "video/x-m4v", ".mov": "video/quicktime", ".mkv": "video/x-matroska", ".webm": "video/webm",
 }
 
 var imageTypes = map[string]string{"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
@@ -103,10 +131,17 @@ type Upload struct {
 	notify  Notifier
 	log     *slog.Logger
 	now     func() time.Time
+	limits  UploadLimits
 }
 
 func NewUpload(repo UploadStore, store storage.API, limiter Limiter, ipKey []byte, urls media.URLs, notify Notifier, log *slog.Logger) *Upload {
-	return &Upload{repo: repo, store: store, limiter: limiter, ipKey: ipKey, urls: urls, notify: notify, log: log, now: time.Now}
+	return &Upload{repo: repo, store: store, limiter: limiter, ipKey: ipKey, urls: urls, notify: notify, log: log, now: time.Now, limits: DefaultUploadLimits()}
+}
+
+// WithLimits replaces the default limits. The caller (config.Load) has already validated them.
+func (s *Upload) WithLimits(l UploadLimits) *Upload {
+	s.limits = l
+	return s
 }
 
 func (s *Upload) limit(ctx context.Context, key string, max int64, window time.Duration) error {
@@ -180,12 +215,12 @@ func (s *Upload) Init(ctx context.Context, p *auth.Principal, ci ClientInfo, in 
 	case name == "" || utf8.RuneCountInString(name) > 255:
 		fields["filename"] = "1-255 characters"
 	case !okExt:
-		fields["filename"] = "Use .mp4, .mov, .mkv, .webm or .avi"
+		fields["filename"] = "Use .mp4, .m4v, .mov, .mkv or .webm"
 	}
 	if in.Size <= 0 {
 		fields["size"] = "The file is empty"
-	} else if in.Size > MaxUploadBytes {
-		fields["size"] = "The maximum size is 5 GiB"
+	} else if in.Size > s.limits.MaxBytes {
+		fields["size"] = "The maximum size is " + sizeText(s.limits.MaxBytes)
 	}
 	if ct := strings.ToLower(strings.TrimSpace(in.ContentType)); ct != "" && !strings.HasPrefix(ct, "video/") && ct != "application/octet-stream" {
 		fields["contentType"] = "That doesn't look like a video"
@@ -201,13 +236,13 @@ func (s *Upload) Init(ctx context.Context, p *auth.Principal, ci ClientInfo, in 
 	if err != nil {
 		return model.UploadInit{}, apperr.Internal(err)
 	}
-	if open >= MaxOpenUploads {
+	if open >= s.limits.MaxOpen {
 		return model.UploadInit{}, errLimitReached("unfinished uploads")
 	}
 
 	uploadID, videoID := auth.NewUUIDv7(), auth.NewUUIDv7()
 	key := "uploads/" + videoID + "/original" + ext
-	partCount := int32((in.Size + UploadPartSize - 1) / UploadPartSize)
+	partCount := int32((in.Size + s.limits.PartSize - 1) / s.limits.PartSize)
 	providerID, err := s.store.CreateMultipart(ctx, key, ctype)
 	if err != nil {
 		s.log.ErrorContext(ctx, "create multipart failed", "err", err.Error())
@@ -215,8 +250,8 @@ func (s *Upload) Init(ctx context.Context, p *auth.Principal, ci ClientInfo, in 
 	}
 	err = s.repo.CreateUpload(ctx, repository.UploadInit{
 		UploadID: uploadID, VideoID: videoID, UserID: p.UserID, Title: titleFromFilename(name), Filename: name, StorageKey: key,
-		ProviderUploadID: providerID, ContentType: ctype, Size: in.Size, PartSize: UploadPartSize, PartCount: partCount,
-		ExpiresAt: s.now().Add(UploadTTL),
+		ProviderUploadID: providerID, ContentType: ctype, Size: in.Size, PartSize: int32(s.limits.PartSize), PartCount: partCount, // config bounds PartSize to <= 1 GiB
+		ExpiresAt: s.now().Add(s.limits.SessionTTL),
 		Audit:     s.auditEntry(p, ci, "upload.init", "video", videoID, map[string]any{"size": in.Size, "parts": partCount}),
 	})
 	if err != nil {
@@ -226,9 +261,9 @@ func (s *Upload) Init(ctx context.Context, p *auth.Principal, ci ClientInfo, in 
 
 	parts := make([]model.UploadPart, 0, partCount)
 	for n := 1; n <= int(partCount); n++ {
-		parts = append(parts, model.UploadPart{PartNumber: n, URL: s.store.PresignUploadPart(key, providerID, n, PresignPartTTL)})
+		parts = append(parts, model.UploadPart{PartNumber: n, URL: s.store.PresignUploadPart(key, providerID, n, s.limits.presignPartTTL())})
 	}
-	return model.UploadInit{UploadID: uploadID, VideoID: videoID, PartSize: UploadPartSize, Parts: parts}, nil
+	return model.UploadInit{UploadID: uploadID, VideoID: videoID, PartSize: s.limits.PartSize, Parts: parts}, nil
 }
 
 // ---------- complete ----------
@@ -242,11 +277,9 @@ type PartIn struct {
 // It is a cheap early filter, not a full validation (the worker runs ffprobe).
 func validContainer(head []byte) bool {
 	switch {
-	case len(head) >= 12 && string(head[4:8]) == "ftyp": // MP4 / MOV
+	case len(head) >= 12 && string(head[4:8]) == "ftyp": // MP4 / M4V / MOV
 		return true
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte{0x1A, 0x45, 0xDF, 0xA3}): // Matroska / WebM (EBML)
-		return true
-	case len(head) >= 12 && string(head[:4]) == "RIFF" && string(head[8:12]) == "AVI ": // AVI
 		return true
 	}
 	return false

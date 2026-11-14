@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -226,6 +227,7 @@ func TestInitValidation(t *testing.T) {
 		in   InitInput
 	}{
 		{"bad extension", InitInput{Filename: "x.exe", Size: 10}},
+		{"avi is no longer accepted", InitInput{Filename: "x.avi", Size: 10}},
 		{"empty", InitInput{Filename: "x.mp4", Size: 0}},
 		{"too big", InitInput{Filename: "x.mp4", Size: MaxUploadBytes + 1}},
 		{"not video", InitInput{Filename: "x.mp4", Size: 10, ContentType: "text/html"}},
@@ -258,6 +260,77 @@ func TestInitPartsAndKey(t *testing.T) {
 	}
 	if db.created.ContentType != "video/mp4" {
 		t.Errorf("content type must come from the extension, got %q", db.created.ContentType)
+	}
+}
+
+func TestInitAcceptsAllowedFormats(t *testing.T) {
+	for ext, want := range map[string]string{".mp4": "video/mp4", ".m4v": "video/x-m4v", ".MOV": "video/quicktime", ".mkv": "video/x-matroska", ".webm": "video/webm"} {
+		db := &fakeUploads{}
+		svc, _ := newUploadSvc(db, &fakeStorage{})
+		if _, err := svc.Init(context.Background(), testUser, testCI, InitInput{Filename: "clip" + ext, Size: 10}); err != nil {
+			t.Errorf("%s rejected: %v", ext, err)
+		} else if db.created.ContentType != want {
+			t.Errorf("%s: content type %q, want %q", ext, db.created.ContentType, want)
+		}
+	}
+}
+
+func TestDefaultUploadLimitsMatchConstants(t *testing.T) {
+	d := DefaultUploadLimits()
+	if d.MaxBytes != MaxUploadBytes || d.PartSize != UploadPartSize || d.MaxOpen != MaxOpenUploads || d.SessionTTL != UploadTTL {
+		t.Fatalf("defaults drifted from the constants: %+v", d)
+	}
+	if d.presignPartTTL() != PresignPartTTL || d.presignPartTTL() >= d.SessionTTL {
+		t.Errorf("presign TTL %v must equal %v and stay below the session %v", d.presignPartTTL(), PresignPartTTL, d.SessionTTL)
+	}
+}
+
+func TestInitUsesConfiguredLimits(t *testing.T) {
+	lim := UploadLimits{MaxBytes: 50 << 20, PartSize: 5 << 20, MaxOpen: 1, SessionTTL: 2 * time.Hour}
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	newSvc := func(db *fakeUploads) *Upload {
+		svc, _ := newUploadSvc(db, &fakeStorage{})
+		svc.WithLimits(lim).now = func() time.Time { return now }
+		return svc
+	}
+
+	db := &fakeUploads{}
+	out, err := newSvc(db).Init(context.Background(), testUser, testCI, InitInput{Filename: "a.mp4", Size: 12 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Parts) != 3 || out.PartSize != 5<<20 || db.created.PartSize != 5<<20 || db.created.PartCount != 3 {
+		t.Errorf("parts=%d partSize=%d stored=%d/%d, want 3 parts of 5 MiB", len(out.Parts), out.PartSize, db.created.PartSize, db.created.PartCount)
+	}
+	if !db.created.ExpiresAt.Equal(now.Add(2 * time.Hour)) {
+		t.Errorf("expires %v, want %v", db.created.ExpiresAt, now.Add(2*time.Hour))
+	}
+
+	db = &fakeUploads{}
+	_, err = newSvc(db).Init(context.Background(), testUser, testCI, InitInput{Filename: "a.mp4", Size: 51 << 20})
+	if ecode(t, err) != "validation_failed" || db.created != nil {
+		t.Errorf("over the configured maximum: code=%q created=%v", ecode(t, err), db.created != nil)
+	}
+	if got := apperr.From(err).Fields["size"]; !strings.Contains(got, "50 MiB") {
+		t.Errorf("size message %q should state the configured maximum", got)
+	}
+
+	_, err = newSvc(&fakeUploads{open: 1}).Init(context.Background(), testUser, testCI, InitInput{Filename: "a.mp4", Size: 5})
+	if ecode(t, err) != "limit_reached" {
+		t.Errorf("configured open-upload cap: %q", ecode(t, err))
+	}
+	// The default cap (5) still allows one open upload.
+	def, _ := newUploadSvc(&fakeUploads{open: 1}, &fakeStorage{})
+	if _, err := def.Init(context.Background(), testUser, testCI, InitInput{Filename: "a.mp4", Size: 5}); err != nil {
+		t.Errorf("default limits: %v", err)
+	}
+}
+
+func TestSizeText(t *testing.T) {
+	for in, want := range map[int64]string{5 << 30: "5 GiB", 200 << 20: "200 MiB", 1536 << 20: "1536 MiB", 500: "500 bytes"} {
+		if got := sizeText(in); got != want {
+			t.Errorf("sizeText(%d)=%q want %q", in, got, want)
+		}
 	}
 }
 
@@ -400,13 +473,13 @@ func TestCompleteInProgressAndClosed(t *testing.T) {
 }
 
 func TestValidContainer(t *testing.T) {
-	ok := [][]byte{mp4Head(), {0x1A, 0x45, 0xDF, 0xA3, 1, 2}, []byte("RIFF\x00\x00\x00\x00AVI LIST")}
+	ok := [][]byte{mp4Head(), {0x1A, 0x45, 0xDF, 0xA3, 1, 2}}
 	for i, b := range ok {
 		if !validContainer(b) {
 			t.Errorf("valid #%d rejected", i)
 		}
 	}
-	for i, b := range [][]byte{nil, []byte("MZ\x90\x00"), []byte("GIF89a......."), []byte("RIFF\x00\x00\x00\x00WAVEfmt ")} {
+	for i, b := range [][]byte{nil, []byte("MZ\x90\x00"), []byte("GIF89a......."), []byte("RIFF\x00\x00\x00\x00WAVEfmt "), []byte("RIFF\x00\x00\x00\x00AVI LIST")} {
 		if validContainer(b) {
 			t.Errorf("invalid #%d accepted", i)
 		}

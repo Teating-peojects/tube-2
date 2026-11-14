@@ -8,7 +8,7 @@ that must change in `backend/` or `web/` (they must compile into those modules).
 - Output: this folder, audit, baseline runs and evidence (`baseline/`).
 - Edits outside storage/: none.
 
-## Phase B — Configuration and validation
+## Phase B — Configuration and validation  (status: DONE, see PROGRESS.md)
 - Move limits to config with validated defaults: part size, max video size, upload session TTL, max retries,
   max open uploads, presign expiry. Names follow `STORAGE_*` / `UPLOAD_*`; defaults equal today's constants so
   behaviour does not change unless set.

@@ -389,3 +389,52 @@ func TestPGVideoGone(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestPGRemoveVideoAudits(t *testing.T) {
+	e := newPGEnv(t)
+	vid := e.video(3)
+	s := e.store("w")
+	j := claimFor(t, s, vid)
+	if err := s.RemoveVideo(ctxb, j, "Test-Signature FOUND"); err != nil {
+		t.Fatal(err)
+	}
+	if e.str(`SELECT moderation_status::text FROM videos WHERE id = $1::uuid`, vid) != "REMOVED" {
+		t.Fatal("not removed")
+	}
+	if e.num(`SELECT count(*) FROM audit_logs WHERE action = 'moderation.scan_match' AND target_id = $1`, vid) != 1 {
+		t.Fatal("scan match not audited")
+	}
+}
+
+func TestPGQueueStats(t *testing.T) {
+	e := newPGEnv(t)
+	vid := e.video(3)
+	s := e.store("w")
+	stats, err := s.QueueStats(ctxb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var queued QueueStat
+	for _, q := range stats {
+		if q.Type == "METADATA" && q.Status == "QUEUED" {
+			queued = q
+		}
+	}
+	if queued.Count < 1 {
+		t.Fatalf("queued METADATA jobs not counted: %+v", stats)
+	}
+	j := claimFor(t, s, vid)
+	if _, err := s.Fail(ctxb, j, permanent("x", "y")); err != nil {
+		t.Fatal(err)
+	}
+	stats, _ = s.QueueStats(ctxb)
+	failed := 0
+	for _, q := range stats {
+		if q.Type == "METADATA" && q.Status == "FAILED" {
+			failed = q.Count
+		}
+	}
+	if failed < 1 {
+		t.Fatalf("recent FAILED jobs not counted: %+v", stats)
+	}
+}

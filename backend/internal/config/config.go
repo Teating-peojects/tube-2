@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -63,7 +64,9 @@ type Config struct {
 	// the plain public CDN_URL ones (development only). PlaybackKey overrides the key derived from
 	// AuthSecret (set it when an edge/CDN verifies tokens too).
 	StreamBaseURL string
-	PlaybackKey   []byte
+	// MetricsAddr, when set (host:port), serves /metrics on a separate listener. Keep it internal.
+	MetricsAddr string
+	PlaybackKey []byte
 }
 
 func (c Config) IsProduction() bool { return c.Env == "production" }
@@ -263,6 +266,16 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 	c.Storage = st
+
+	if a := get("METRICS_ADDR", ""); a != "" {
+		if _, port, err := net.SplitHostPort(a); err != nil {
+			fail("METRICS_ADDR must be host:port, for example 127.0.0.1:9090 (got %q)", a)
+		} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+			fail("METRICS_ADDR port must be 1-65535 (got %q)", a)
+		} else {
+			c.MetricsAddr = a
+		}
+	}
 
 	// ----- playback (B7) -----
 	if v := strings.TrimRight(get("STREAM_BASE_URL", ""), "/"); v != "" {

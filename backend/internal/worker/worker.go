@@ -45,12 +45,16 @@ type Worker struct {
 	store Store
 	pipe  *Pipeline
 	log   *slog.Logger
+	met   *Metrics
 }
 
 func New(cfg Config, store Store, pipe *Pipeline, log *slog.Logger) *Worker {
 	cfg.defaults()
 	return &Worker{cfg: cfg, store: store, pipe: pipe, log: log}
 }
+
+// WithMetrics enables Prometheus instrumentation (optional).
+func (w *Worker) WithMetrics(m *Metrics) *Worker { w.met = m; return w }
 
 func (w *Worker) touch() {
 	if w.cfg.AliveFile != "" {
@@ -147,10 +151,13 @@ func (w *Worker) process(parent context.Context, j Job) {
 	bg := context.WithoutCancel(parent)
 	switch {
 	case err == nil:
+		w.met.observe(j, "completed", time.Since(start))
 		log.Info("job completed", "ms", time.Since(start).Milliseconds())
 	case lost.Load() || errors.Is(err, ErrLeaseLost):
+		w.met.observe(j, "lease_lost", time.Since(start))
 		log.Warn("job lease lost, result dropped")
 	case errors.Is(err, context.Canceled):
+		w.met.observe(j, "released", time.Since(start))
 		if rerr := w.store.Release(bg, j); rerr != nil {
 			log.Warn("release failed", "err", rerr.Error())
 		} else {
@@ -165,11 +172,13 @@ func (w *Worker) process(parent context.Context, j Job) {
 		case ferr != nil:
 			log.Error("could not record job failure", "err", ferr.Error(), "cause", je.Error())
 		case res.Final:
+			w.met.observe(j, "failed", time.Since(start))
 			log.Error("job failed permanently", "code", je.Code, "err", je.Error())
 			if res.CreatorID != "" && w.pipe.Notify != nil {
 				w.pipe.Notify(bg, res.CreatorID, j.VideoID)
 			}
 		default:
+			w.met.observe(j, "retry", time.Since(start))
 			log.Warn("job failed, will retry", "code", je.Code, "in", backoff(j.Attempts).String(), "err", je.Error())
 		}
 	}

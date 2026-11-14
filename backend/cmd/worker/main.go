@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/redxtube/api/internal/cache"
 	"github.com/redxtube/api/internal/db"
+	"github.com/redxtube/api/internal/metrics"
 	"github.com/redxtube/api/internal/realtime"
 	"github.com/redxtube/api/internal/storage"
 	"github.com/redxtube/api/internal/worker"
@@ -178,6 +180,17 @@ func run() error {
 		}
 	}
 
+	if c := env("SCANNER_COMMAND", ""); c != "" {
+		sc, err := worker.ParseScannerCommand(c)
+		if err != nil {
+			return fmt.Errorf("SCANNER_COMMAND: %w", err)
+		}
+		pipe.Scanner = sc
+		log.Info("upload scanner enabled (fail-closed)", "command", sc.Args[0])
+	} else if env("APP_ENV", "development") == "production" {
+		log.Warn("no SCANNER_COMMAND: uploads are NOT scanned for malware/CSAM; plug a scanner in before opening uploads (docs/worker.md)")
+	}
+
 	host, _ := os.Hostname()
 	pg := worker.NewPG(pool, fmt.Sprintf("%s-%d", host, os.Getpid()))
 	pipe.Store = pg
@@ -185,6 +198,21 @@ func run() error {
 		Concurrency: conc, PollInterval: poll, StaleAfter: stale, ShutdownGrace: grace, WorkDir: workDir,
 		AliveFile: env("WORKER_ALIVE_FILE", "/tmp/worker.alive"),
 	}, pg, pipe, log)
+
+	if addr := env("METRICS_ADDR", ""); addr != "" {
+		reg := metrics.NewRegistry()
+		w.WithMetrics(worker.NewMetrics(reg, pg))
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", reg.Handler())
+		ms := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			if err := ms.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("metrics server", "err", err.Error())
+			}
+		}()
+		defer ms.Close()
+		log.Info("metrics listening (keep this port internal)", "addr", addr)
+	}
 
 	log.Info("worker started", "concurrency", max(conc, 1), "ffmpeg_threads", threads, "workdir", workDir)
 	w.Run(ctx)

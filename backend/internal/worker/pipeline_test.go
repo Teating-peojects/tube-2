@@ -93,6 +93,7 @@ type fakeStore struct {
 	master   string
 	done     []string
 	gotMeta  MetadataResult
+	removed  string
 }
 
 func (f *fakeStore) Video(context.Context, string) (VideoRow, error) { return f.video, nil }

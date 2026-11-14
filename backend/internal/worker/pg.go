@@ -327,4 +327,23 @@ func (s *PG) FinishHLS(ctx context.Context, j Job, masterKey string) (creator st
 	return creator, err
 }
 
+// RemoveVideo marks the video REMOVED and audits it in one transaction (the same effect the
+// blocked-hash trigger has). The original stays in storage untouched: what happens to evidence is a
+// legal decision, not the worker's.
+func (s *PG) RemoveVideo(ctx context.Context, j Job, reason string) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE videos SET moderation_status = 'REMOVED', updated_at = now()
+WHERE id = $1::uuid AND deleted_at IS NULL`, j.VideoID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrVideoGone
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, metadata)
+VALUES (NULL, 'moderation.scan_match', 'video', $1, jsonb_build_object('detail', $2::text))`, j.VideoID, reason)
+		return err
+	})
+}
+
 var _ Store = (*PG)(nil)

@@ -36,6 +36,8 @@ type Deps struct {
 	Admin *handler.Admin
 	// Stream serves signed HLS objects at /stream/{token}/{key...} (B7); nil disables it.
 	Stream http.Handler
+	// Metrics, when set, wraps every request (see internal/metrics).
+	Metrics httpx.Middleware
 	// Authn resolves the session cookie on every request (required when Auth is set).
 	Authn httpx.Middleware
 }
@@ -93,6 +95,9 @@ func New(d Deps) http.Handler {
 		httpx.CORS(d.Cfg.CORSOrigins),
 		middleware.CSRFOrigin(d.Cfg.CORSOrigins),
 		httpx.BodyLimit(d.Cfg.MaxBodyBytes),
+	}
+	if d.Metrics != nil {
+		chain = append(chain, d.Metrics)
 	}
 	if d.Authn != nil {
 		chain = append(chain, skipUnder("/stream/", d.Authn))

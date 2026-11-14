@@ -17,8 +17,10 @@ import (
 	"github.com/redxtube/api/internal/config"
 	"github.com/redxtube/api/internal/db"
 	"github.com/redxtube/api/internal/handler"
+	"github.com/redxtube/api/internal/httpx"
 	"github.com/redxtube/api/internal/mail"
 	"github.com/redxtube/api/internal/media"
+	"github.com/redxtube/api/internal/metrics"
 	"github.com/redxtube/api/internal/middleware"
 	"github.com/redxtube/api/internal/playback"
 	"github.com/redxtube/api/internal/ratelimit"
@@ -137,6 +139,29 @@ func run() error {
 	studioSvc := service.NewStudio(repository.NewStudio(pool), limiter, ipKey, urls, log)
 	cookies := middleware.Cookies{Session: cfg.SessionCookieName, Age: "xh_age", AgeMark: "xh_age_ok", Domain: cfg.CookieDomain, Secure: cfg.CookieSecure}
 
+	var metricsMW httpx.Middleware
+	if cfg.MetricsAddr != "" {
+		reg := metrics.NewRegistry()
+		metricsMW = reg.HTTP()
+		reg.AddCollector(func(w *metrics.Writer) {
+			st := pool.Stat()
+			w.Gauge("db_pool_acquired_conns", "Connections in use.", float64(st.AcquiredConns()))
+			w.Gauge("db_pool_idle_conns", "Idle connections.", float64(st.IdleConns()))
+			w.Gauge("db_pool_total_conns", "Open connections.", float64(st.TotalConns()))
+			w.Gauge("db_pool_max_conns", "Pool size limit.", float64(st.MaxConns()))
+		})
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", reg.Handler())
+		ms := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			if err := ms.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("metrics server", "err", err.Error())
+			}
+		}()
+		defer ms.Close()
+		log.Info("metrics listening (keep this port internal)", "addr", cfg.MetricsAddr)
+	}
+
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: server.New(server.Deps{
@@ -146,6 +171,7 @@ func run() error {
 			Authn:   middleware.Authenticate(authSvc, cookies),
 			Catalog: &handler.Catalog{Svc: catalogSvc},
 			Stream:  streamHandler,
+			Metrics: metricsMW,
 			Social:  &handler.Social{Svc: socialSvc, TrustProxy: cfg.TrustProxyHeaders},
 			Upload:  &handler.Upload{Svc: uploadSvc, TrustProxy: cfg.TrustProxyHeaders},
 

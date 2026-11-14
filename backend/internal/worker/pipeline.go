@@ -33,6 +33,8 @@ type Pipeline struct {
 	FFmpeg  string
 	FFprobe string
 	Threads int
+	// Scanner is optional (B10). When set it runs on every original before ffprobe; fail-closed.
+	Scanner Scanner
 	// Notify pushes a realtime event after a commit (optional).
 	Notify func(ctx context.Context, userID, videoID string)
 }
@@ -113,6 +115,21 @@ func (p *Pipeline) metadata(ctx context.Context, j Job, v VideoRow) error {
 	path, sum, err := p.original(ctx, j.VideoID, v, true)
 	if err != nil {
 		return err
+	}
+	if p.Scanner != nil {
+		infected, detail, err := p.Scanner.Scan(ctx, path)
+		switch {
+		case err != nil && ctx.Err() != nil:
+			return ctx.Err()
+		case err != nil:
+			return transient("scanner_unavailable", err) // fail closed: retried, then the video FAILS
+		case infected:
+			if err := p.Store.RemoveVideo(ctx, j, detail); err != nil {
+				return err
+			}
+			p.Log.WarnContext(ctx, "scanner matched an upload", "video", j.VideoID, "detail", detail)
+			return &JobError{Code: "blocked_content", Message: "This video was removed by moderation", Permanent: true, Silent: true}
+		}
 	}
 	pr, err := ProbeFile(ctx, p.FFprobe, path, filepath.Ext(v.OriginalKey))
 	if err != nil {

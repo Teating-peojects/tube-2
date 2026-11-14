@@ -86,6 +86,7 @@ func runFFmpeg(ctx context.Context, bin string, args []string, timeout time.Dura
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, bin, args...)
+	detach(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

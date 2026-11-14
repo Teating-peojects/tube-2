@@ -227,3 +227,20 @@ func TestPlaybackConfig(t *testing.T) {
 		t.Errorf("valid production config: %v", err)
 	}
 }
+
+func TestMetricsAddr(t *testing.T) {
+	m := devBase()
+	m["METRICS_ADDR"] = "127.0.0.1:9090"
+	if c, err := Load(env(m)); err != nil || c.MetricsAddr != "127.0.0.1:9090" {
+		t.Fatalf("%v %q", err, c.MetricsAddr)
+	}
+	for _, bad := range []string{"9090", "host:0", "host:99999", "host:abc"} {
+		m["METRICS_ADDR"] = bad
+		if _, err := Load(env(m)); err == nil || !strings.Contains(err.Error(), "METRICS_ADDR") {
+			t.Errorf("%q accepted: %v", bad, err)
+		}
+	}
+	if c, _ := Load(env(devBase())); c.MetricsAddr != "" {
+		t.Error("metrics must be off by default")
+	}
+}

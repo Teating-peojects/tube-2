@@ -142,6 +142,7 @@ services:
       # B7: signed HLS. Local default points at this API.
       STREAM_BASE_URL: ${STREAM_BASE_URL:-http://localhost:8080/stream}
       PLAYBACK_SIGNING_KEY: ${PLAYBACK_SIGNING_KEY:-}
+      METRICS_ADDR: ${METRICS_ADDR:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       redis: { condition: service_healthy }
@@ -168,6 +169,8 @@ services:
       STORAGE_PATH_STYLE: ${STORAGE_PATH_STYLE:-}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
       FFMPEG_THREADS: ${FFMPEG_THREADS:-0}
+      SCANNER_COMMAND: ${SCANNER_COMMAND:-}
+      METRICS_ADDR: ${WORKER_METRICS_ADDR:-}
     depends_on:
       redis: { condition: service_healthy }
       reference-data: { condition: service_completed_successfully }

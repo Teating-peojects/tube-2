@@ -162,8 +162,10 @@ func (p Probe) Validate(size int64) (videoType string, seconds int, err *JobErro
 // ProbeFile runs ffprobe on a local file. Only the file protocol is allowed, so a crafted
 // "video" that is really a playlist cannot make ffprobe read other files or reach the network.
 func ProbeFile(ctx context.Context, ffprobe, path, ext string) (Probe, error) {
-	out, err := exec.CommandContext(ctx, ffprobe, "-v", "error", "-protocol_whitelist", "file",
-		"-print_format", "json", "-show_format", "-show_streams", path).Output()
+	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-protocol_whitelist", "file",
+		"-print_format", "json", "-show_format", "-show_streams", path)
+	detach(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError
 		if asExit(err, &ee) {

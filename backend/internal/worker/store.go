@@ -64,6 +64,9 @@ type Store interface {
 	// THUMBNAIL. blocked is true when the hash is on the blocklist: the database has then already
 	// removed the video, the job is NOT completed and the caller must fail it.
 	SaveMetadata(ctx context.Context, j Job, m MetadataResult) (blocked bool, err error)
+	// RemoveVideo takes a video down because a scanner matched it: moderation_status becomes REMOVED
+	// and the match is written to the audit log. The caller then fails the job.
+	RemoveVideo(ctx context.Context, j Job, reason string) error
 	// ReplaceThumbnails swaps the generated thumbnails, completes THUMBNAIL, enqueues TRANSCODE
 	// and returns the storage keys of the thumbnails it replaced.
 	ReplaceThumbnails(ctx context.Context, j Job, items []ThumbOut, primary int) (old []string, err error)

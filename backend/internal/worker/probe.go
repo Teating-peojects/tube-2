@@ -74,8 +74,11 @@ func ParseProbe(raw []byte, ext string) (Probe, error) {
 	p.Bitrate, _ = strconv.ParseInt(o.Format.BitRate, 10, 64)
 	if c, ok := allowedFormats[p.FormatName]; ok {
 		p.Container = c
-		if c == "mp4" && strings.EqualFold(ext, ".mov") {
+		switch {
+		case c == "mp4" && strings.EqualFold(ext, ".mov"):
 			p.Container = "mov"
+		case c == "webm" && !strings.EqualFold(ext, ".webm"):
+			p.Container = "mkv" // matroska and webm share ffprobe's format name: the extension tells them apart
 		}
 	}
 	seenVideo := false

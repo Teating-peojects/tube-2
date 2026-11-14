@@ -143,6 +143,12 @@ services:
       STREAM_BASE_URL: ${STREAM_BASE_URL:-http://localhost:8080/stream}
       PLAYBACK_SIGNING_KEY: ${PLAYBACK_SIGNING_KEY:-}
       METRICS_ADDR: ${METRICS_ADDR:-}
+
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-}
+      UPLOAD_PART_SIZE_BYTES: ${UPLOAD_PART_SIZE_BYTES:-}
+      UPLOAD_MAX_OPEN: ${UPLOAD_MAX_OPEN:-}
+      UPLOAD_SESSION_TTL: ${UPLOAD_SESSION_TTL:-}
+      UPLOAD_MAX_RETRIES: ${UPLOAD_MAX_RETRIES:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       redis: { condition: service_healthy }

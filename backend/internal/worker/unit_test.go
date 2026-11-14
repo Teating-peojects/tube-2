@@ -159,3 +159,24 @@ func TestBackoff(t *testing.T) {
 		t.Error("backoff not capped")
 	}
 }
+
+func TestParseProbeContainerLabels(t *testing.T) {
+	mk := func(format, ext string) string {
+		p, err := ParseProbe([]byte(`{"streams":[{"codec_type":"video","codec_name":"h264","width":640,"height":360}],"format":{"format_name":"`+format+`","duration":"5"}}`), ext)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.Container
+	}
+	for _, c := range []struct{ format, ext, want string }{
+		{"mov,mp4,m4a,3gp,3g2,mj2", ".mp4", "mp4"},
+		{"mov,mp4,m4a,3gp,3g2,mj2", ".m4v", "mp4"},
+		{"mov,mp4,m4a,3gp,3g2,mj2", ".MOV", "mov"},
+		{"matroska,webm", ".webm", "webm"},
+		{"matroska,webm", ".mkv", "mkv"},
+	} {
+		if got := mk(c.format, c.ext); got != c.want {
+			t.Errorf("%s %s -> %q, want %q", c.format, c.ext, got, c.want)
+		}
+	}
+}

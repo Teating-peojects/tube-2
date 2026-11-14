@@ -1,0 +1,23 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+ RUN  v2.1.9 /tmp/web
+
+ ✓ src/lib/uploader.test.ts (6 tests) 11ms
+ ✓ src/features/auth/schemas.test.ts (14 tests) 6ms
+ ✓ src/features/upload/UploadProgress.test.tsx (4 tests) 134ms
+ ✓ src/components/ui/Modal.test.tsx (4 tests) 135ms
+ ✓ src/config/upload.test.ts (3 tests) 3ms
+ ✓ src/features/upload/TagInput.test.tsx (3 tests) 277ms
+ ✓ src/lib/auth.test.ts (11 tests) 4ms
+ ✓ src/store/modal.test.ts (3 tests) 4ms
+ ✓ src/features/auth/errors.test.ts (3 tests) 2ms
+ ✓ src/store/toast.test.ts (3 tests) 5ms
+ ✓ src/utils/format.test.ts (5 tests) 25ms
+ ✓ src/lib/search-params.test.ts (3 tests) 4ms
+ ✓ src/components/ui/Toggle.test.tsx (1 test) 121ms
+
+ Test Files  13 passed (13)
+      Tests  63 passed (63)
+   Start at  23:33:06
+   Duration  11.78s (transform 287ms, setup 864ms, collect 3.60s, tests 730ms, environment 4.16s, prepare 718ms)
+

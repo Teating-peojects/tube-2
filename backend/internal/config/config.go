@@ -35,6 +35,15 @@ type StorageConfig struct {
 	PathStyle      bool
 }
 
+// UploadConfig holds the tunable upload limits. Defaults equal the previous constants.
+type UploadConfig struct {
+	MaxBytes   int64         // UPLOAD_MAX_BYTES, 1 MiB..5 GiB (database cap)
+	PartSize   int64         // UPLOAD_PART_SIZE_BYTES, 5 MiB..1 GiB (at most 1,024 parts per file)
+	MaxOpen    int           // UPLOAD_MAX_OPEN, unfinished uploads per user, 1..50
+	SessionTTL time.Duration // UPLOAD_SESSION_TTL, 1h..168h
+	MaxRetries int           // UPLOAD_MAX_RETRIES, reopenings of one expired upload, 0..10 (0 disables retry)
+}
+
 // Enabled reports whether uploads are configured.
 func (s StorageConfig) Enabled() bool { return s.Endpoint != "" }
 
@@ -67,6 +76,8 @@ type Config struct {
 	// MetricsAddr, when set (host:port), serves /metrics on a separate listener. Keep it internal.
 	MetricsAddr string
 	PlaybackKey []byte
+
+	Upload UploadConfig
 }
 
 func (c Config) IsProduction() bool { return c.Env == "production" }
@@ -299,6 +310,49 @@ func Load(getenv func(string) string) (Config, error) {
 	if c.IsProduction() && c.Storage.Enabled() && c.StreamBaseURL == "" {
 		fail("STREAM_BASE_URL is required in production when STORAGE_* is set: HLS must be served through signed URLs, not a public bucket")
 	}
+
+	// ----- upload limits -----
+	up := UploadConfig{MaxBytes: 5 << 30, PartSize: 16 << 20, MaxOpen: 5, SessionTTL: 24 * time.Hour, MaxRetries: 3}
+	int64Env := func(name string, dst *int64, lo, hi int64) {
+		v := get(name, "")
+		if v == "" {
+			return
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < lo || n > hi {
+			fail("%s must be a whole number of bytes between %d and %d (got %q)", name, lo, hi, v)
+			return
+		}
+		*dst = n
+	}
+	int64Env("UPLOAD_MAX_BYTES", &up.MaxBytes, 1<<20, 5<<30)
+	int64Env("UPLOAD_PART_SIZE_BYTES", &up.PartSize, 5<<20, 1<<30)
+	if v := get("UPLOAD_MAX_OPEN", ""); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 50 {
+			fail("UPLOAD_MAX_OPEN must be 1-50 (got %q)", v)
+		} else {
+			up.MaxOpen = n
+		}
+	}
+	if v := get("UPLOAD_MAX_RETRIES", ""); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 10 {
+			fail("UPLOAD_MAX_RETRIES must be 0-10, 0 disables retry (got %q)", v)
+		} else {
+			up.MaxRetries = n
+		}
+	}
+	if v := get("UPLOAD_SESSION_TTL", ""); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Hour || d > 168*time.Hour {
+			fail("UPLOAD_SESSION_TTL must be a duration between 1h and 168h, e.g. 24h (got %q)", v)
+		} else {
+			up.SessionTTL = d
+		}
+	}
+	// With the bounds above a file needs at most 5 GiB / 5 MiB = 1,024 parts, far below S3's 10,000-part limit.
+	c.Upload = up
 
 	if c.DatabaseURL == "" {
 		fail("DATABASE_URL is required")

@@ -5,7 +5,7 @@ export const uploadLimits = {
   // The duration is unknown before upload, so the client enforces the larger limit and the API rejects an oversized SHORT.
   maxBytes: 5 * 1024 ** 3,
   maxShortBytes: 200 * 1024 ** 2,
-  extensions: [".mp4", ".mov", ".mkv", ".webm", ".avi"],
+  extensions: [".mp4", ".m4v", ".mov", ".mkv", ".webm"],
   maxThumbBytes: 2 * 1024 ** 2,
   maxCaptionBytes: 1024 ** 2,
 } as const;

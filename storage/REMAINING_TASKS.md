@@ -1,0 +1,13 @@
+# Remaining tasks (ordered)
+
+1. ~~Creator approval~~ decided: none. ~~`.avi`~~ decided: dropped, `.m4v` added. ~~Configurable limits~~ done (Phase B).
+2. Open, low priority: per-request age gate on upload routes (age is verified at registration only).
+4. ~~Retry endpoint, retry counter and limit~~ done (Phase C). Frontend retry UI is Phase E.
+5. Extend cleanup: orphans, retention, metrics, storage health (Phase D).
+6. Verify/fill frontend: ETA, `beforeunload`, network loss, e2e (Phase E).
+7. Upload HTTP integration tests and MinIO integration test + CI service (Phase F).
+8. OpenAPI and the remaining PHASE_5 documents (Phase G).
+9. Housekeeping outside Phase 5: exec bits on `db/scripts/*.sh` and `security/scripts/promote.sh` (F1), stdout in
+   `test-db.sh` (F2), migration/table counts in README/DESIGN/db-adaptation (F3), `.puku-cli/settings.local.json`
+   in `.gitignore`.
+10. Blocked on B6 (worker): max duration check, content SHA-256, moving videos to READY.

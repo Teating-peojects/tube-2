@@ -1,0 +1,25 @@
+You are working on xhamtube.com, an existing production-oriented full-stack video-sharing platform.
+
+Before making any changes:
+
+1. Inspect the complete existing repository.
+2. Read all relevant documentation in "docs/ai-context/", "docs/phases/", and "PROGRESS.md".
+3. Understand the existing architecture, database schema, API contracts, coding conventions, and completed phases.
+4. Never assume a previous phase is fully implemented just because documentation says so. Verify the actual code.
+5. Do not rewrite or replace working modules unnecessarily.
+6. Maintain compatibility with existing APIs, database models, and frontend/backend contracts.
+7. Do not introduce undocumented technologies or architectural changes without justification.
+8. Implement only the assigned phase and its necessary integrations.
+9. Add migrations, tests, and documentation.
+10. Update PROGRESS.md and create a detailed phase completion report.
+
+At completion, clearly report:
+
+- Files created and modified.
+- Features implemented.
+- Tests executed and their actual results.
+- Known issues and incomplete work.
+- External infrastructure still requiring configuration.
+- Next recommended phase and integration requirements.
+
+Do not claim production readiness without actual verification.

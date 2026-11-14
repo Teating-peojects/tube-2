@@ -24,6 +24,7 @@ type UploadStatus struct {
 	Progress   int      `json:"progress"`
 	Thumbnails []string `json:"thumbnails"`
 	Error      *string  `json:"error,omitempty"`
+	Retryable  bool     `json:"retryable,omitempty"` // an expired upload that POST /upload/{id}/retry can reopen
 }
 
 type AssetInit struct {

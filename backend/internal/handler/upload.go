@@ -26,6 +26,7 @@ func (h Upload) Routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST "+v+"/upload/init", verified(h.init))
 	mux.HandleFunc("POST "+v+"/upload/{id}/complete", verified(h.complete))
+	mux.HandleFunc("POST "+v+"/upload/{id}/retry", verified(h.retry))
 	mux.HandleFunc("DELETE "+v+"/upload/{id}", verified(h.abort))
 	mux.HandleFunc("GET "+v+"/upload/{id}/status", verified(h.status))
 	mux.HandleFunc("POST "+v+"/upload/{id}/assets", verified(h.assets))
@@ -63,6 +64,14 @@ func (h Upload) complete(w http.ResponseWriter, r *http.Request) error {
 	return done(w)
 }
 
+func (h Upload) retry(w http.ResponseWriter, r *http.Request) error {
+	out, err := h.Svc.Retry(r.Context(), me(r), h.info(r), r.PathValue("id"))
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, out)
+	return nil
+}
 func (h Upload) abort(w http.ResponseWriter, r *http.Request) error {
 	if err := h.Svc.Abort(r.Context(), me(r), h.info(r), r.PathValue("id")); err != nil {
 		return err

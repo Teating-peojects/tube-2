@@ -193,7 +193,7 @@ func TestUploadLimitsDefaultsAndOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u := c.Upload; u.MaxBytes != 5<<30 || u.PartSize != 16<<20 || u.MaxOpen != 5 || u.SessionTTL != 24*time.Hour {
+	if u := c.Upload; u.MaxBytes != 5<<30 || u.PartSize != 16<<20 || u.MaxOpen != 5 || u.SessionTTL != 24*time.Hour || u.MaxRetries != 3 {
 		t.Fatalf("defaults changed: %+v", u)
 	}
 	m := devBase()
@@ -201,11 +201,12 @@ func TestUploadLimitsDefaultsAndOverrides(t *testing.T) {
 	m["UPLOAD_PART_SIZE_BYTES"] = "8388608"
 	m["UPLOAD_MAX_OPEN"] = "3"
 	m["UPLOAD_SESSION_TTL"] = "48h"
+	m["UPLOAD_MAX_RETRIES"] = "5"
 	c, err = Load(env(m))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u := c.Upload; u.MaxBytes != 1<<30 || u.PartSize != 8<<20 || u.MaxOpen != 3 || u.SessionTTL != 48*time.Hour {
+	if u := c.Upload; u.MaxBytes != 1<<30 || u.PartSize != 8<<20 || u.MaxOpen != 3 || u.SessionTTL != 48*time.Hour || u.MaxRetries != 5 {
 		t.Fatalf("overrides not applied: %+v", u)
 	}
 }
@@ -216,6 +217,7 @@ func TestUploadLimitsRejectBadValues(t *testing.T) {
 		"UPLOAD_PART_SIZE_BYTES": {"1048576", "5242879", "1073741825", "-1"},
 		"UPLOAD_MAX_OPEN":        {"0", "51", "many"},
 		"UPLOAD_SESSION_TTL":     {"30m", "169h", "soon", "0"},
+		"UPLOAD_MAX_RETRIES":     {"-1", "11", "often"},
 	}
 	for name, values := range bad {
 		for _, v := range values {
@@ -228,8 +230,12 @@ func TestUploadLimitsRejectBadValues(t *testing.T) {
 	}
 	// Boundary values are accepted.
 	m := devBase()
-	m["UPLOAD_MAX_BYTES"], m["UPLOAD_PART_SIZE_BYTES"], m["UPLOAD_MAX_OPEN"], m["UPLOAD_SESSION_TTL"] = "5368709120", "5242880", "50", "168h"
+	m["UPLOAD_MAX_BYTES"], m["UPLOAD_PART_SIZE_BYTES"], m["UPLOAD_MAX_OPEN"], m["UPLOAD_SESSION_TTL"], m["UPLOAD_MAX_RETRIES"] = "5368709120", "5242880", "50", "168h", "10"
 	if _, err := Load(env(m)); err != nil {
 		t.Errorf("boundary values rejected: %v", err)
+	}
+	m["UPLOAD_MAX_RETRIES"] = "0" // 0 switches retry off
+	if c, err := Load(env(m)); err != nil || c.Upload.MaxRetries != 0 {
+		t.Errorf("UPLOAD_MAX_RETRIES=0 must be accepted and kept: %v %+v", err, c.Upload)
 	}
 }

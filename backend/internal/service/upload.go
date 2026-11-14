@@ -44,6 +44,9 @@ var (
 	errStorage        = apperr.New(http.StatusBadGateway, "storage_unavailable", "Storage is temporarily unavailable, try again")
 )
 
+// MaxUploadRetries is how often one expired upload may be reopened (see Retry).
+const MaxUploadRetries = 3
+
 // UploadLimits are the tunable upload limits (UPLOAD_* environment variables, see config.UploadConfig).
 // DefaultUploadLimits equals the former hard-coded constants, so behaviour only changes when they are set.
 type UploadLimits struct {
@@ -51,10 +54,11 @@ type UploadLimits struct {
 	PartSize   int64         // bytes per multipart part (S3 minimum 5 MiB)
 	MaxOpen    int           // unfinished uploads one user may hold
 	SessionTTL time.Duration // how long an upload session stays open
+	MaxRetries int           // reopenings of one expired session; 0 disables retry
 }
 
 func DefaultUploadLimits() UploadLimits {
-	return UploadLimits{MaxBytes: MaxUploadBytes, PartSize: UploadPartSize, MaxOpen: MaxOpenUploads, SessionTTL: UploadTTL}
+	return UploadLimits{MaxBytes: MaxUploadBytes, PartSize: UploadPartSize, MaxOpen: MaxOpenUploads, SessionTTL: UploadTTL, MaxRetries: MaxUploadRetries}
 }
 
 // presignPartTTL keeps presigned part URLs valid for half the session, always shorter than the session itself.
@@ -103,6 +107,7 @@ type UploadStore interface {
 	FinishComplete(ctx context.Context, s *repository.UploadSession, a repository.AuditEntry) error
 	DiscardUpload(ctx context.Context, s *repository.UploadSession, a *repository.AuditEntry) error
 	ExpireUploads(ctx context.Context, limit int) ([]repository.ExpiredUpload, error)
+	ReviveUpload(ctx context.Context, s *repository.UploadSession, providerUploadID string, expiresAt time.Time, maxRetries int, a repository.AuditEntry) (bool, error)
 	Progress(ctx context.Context, videoID string) (repository.Progress, error)
 	GeneratedThumbs(ctx context.Context, videoID string) ([]repository.ThumbRow, error)
 	CountThumbs(ctx context.Context, videoID string) (int, error)
@@ -259,11 +264,67 @@ func (s *Upload) Init(ctx context.Context, p *auth.Principal, ci ClientInfo, in 
 		return model.UploadInit{}, apperr.Internal(err)
 	}
 
-	parts := make([]model.UploadPart, 0, partCount)
-	for n := 1; n <= int(partCount); n++ {
+	return model.UploadInit{UploadID: uploadID, VideoID: videoID, PartSize: s.limits.PartSize, Parts: s.presignParts(key, providerID, int(partCount))}, nil
+}
+
+// presignParts returns one presigned PUT URL per part of a multipart upload.
+func (s *Upload) presignParts(key, providerID string, count int) []model.UploadPart {
+	parts := make([]model.UploadPart, 0, count)
+	for n := 1; n <= count; n++ {
 		parts = append(parts, model.UploadPart{PartNumber: n, URL: s.store.PresignUploadPart(key, providerID, n, s.limits.presignPartTTL())})
 	}
-	return model.UploadInit{UploadID: uploadID, VideoID: videoID, PartSize: s.limits.PartSize, Parts: parts}, nil
+	return parts
+}
+
+// Retry reopens an upload whose session expired before it was finished (status EXPIRED). The draft video keeps
+// its id and metadata; a fresh multipart upload replaces the one the janitor aborted, so the browser uploads the
+// same file again with new presigned URLs. Cancelled or rejected uploads (ABORTED) are not retryable: the user
+// cancelled them, or the server discarded the file. At most limits.MaxRetries reopenings per session.
+func (s *Upload) Retry(ctx context.Context, p *auth.Principal, ci ClientInfo, uploadID string) (model.UploadInit, error) {
+	if s.store == nil {
+		return model.UploadInit{}, errUploadsOff
+	}
+	u, err := s.session(ctx, p, uploadID)
+	if err != nil {
+		return model.UploadInit{}, err
+	}
+	switch u.Status {
+	case "EXPIRED":
+	case "INITIATED", "COMPLETING":
+		return model.UploadInit{}, apperr.Conflict("upload_active", "This upload is still in progress")
+	default: // COMPLETED, ABORTED
+		return model.UploadInit{}, apperr.Conflict("not_retryable", "This upload can't be retried, start a new one")
+	}
+	if int(u.RetryCount) >= s.limits.MaxRetries {
+		return model.UploadInit{}, apperr.Conflict("retry_limit", "This upload was retried too many times, start a new one")
+	}
+	if err := s.limit(ctx, "upload:retry:"+p.UserID, 20, time.Hour); err != nil {
+		return model.UploadInit{}, err
+	}
+	open, err := s.repo.OpenUploads(ctx, p.UserID)
+	if err != nil {
+		return model.UploadInit{}, apperr.Internal(err)
+	}
+	if open >= s.limits.MaxOpen {
+		return model.UploadInit{}, errLimitReached("unfinished uploads")
+	}
+
+	providerID, err := s.store.CreateMultipart(ctx, u.StorageKey, u.ContentType)
+	if err != nil {
+		s.log.ErrorContext(ctx, "create multipart failed", "err", err.Error())
+		return model.UploadInit{}, errStorage
+	}
+	bg := context.WithoutCancel(ctx)
+	ok, err := s.repo.ReviveUpload(ctx, u, providerID, s.now().Add(s.limits.SessionTTL), s.limits.MaxRetries,
+		s.auditEntry(p, ci, "upload.retry", "video", u.VideoID, map[string]any{"retry": int(u.RetryCount) + 1}))
+	if err != nil || !ok {
+		_ = s.store.AbortMultipart(bg, u.StorageKey, providerID) // do not leave the new multipart behind
+		if err != nil {
+			return model.UploadInit{}, apperr.Internal(err)
+		}
+		return model.UploadInit{}, apperr.Conflict("not_retryable", "This upload can't be retried right now")
+	}
+	return model.UploadInit{UploadID: u.ID, VideoID: u.VideoID, PartSize: int64(u.PartSize), Parts: s.presignParts(u.StorageKey, providerID, int(u.PartCount))}, nil
 }
 
 // ---------- complete ----------
@@ -452,6 +513,11 @@ func (s *Upload) Status(ctx context.Context, p *auth.Principal, uploadID string)
 		return out, nil
 	}
 	if u.Status == "ABORTED" || u.Status == "EXPIRED" || u.VideoDeleted {
+		if u.Status == "EXPIRED" && int(u.RetryCount) < s.limits.MaxRetries {
+			msg := "This upload expired before it finished. You can retry it."
+			out.Status, out.Progress, out.Error, out.Retryable = "failed", 0, &msg, true
+			return out, nil
+		}
 		return fail("This upload was cancelled or has expired.")
 	}
 	if u.Status != "COMPLETED" {

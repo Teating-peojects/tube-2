@@ -18,7 +18,7 @@ that must change in `backend/` or `web/` (they must compile into those modules).
 - Edits outside storage/: `backend/internal/config`, `backend/internal/service/upload.go`, `backend/.env.example`.
 - Tests: config validation, limits applied.
 
-## Phase C — Retry and state
+## Phase C — Retry and state  (status: DONE, see PROGRESS.md)
 - Migration `000011` (reversible, non-destructive): retry counter and last-failure fields on `upload_sessions`.
 - `POST /api/v1/upload/{id}/retry`: owner only, only for failed/expired-but-recoverable states, capped, audited,
   issues fresh presigned URLs without creating a second video row.

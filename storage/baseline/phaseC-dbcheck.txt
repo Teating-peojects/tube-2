@@ -1,0 +1,2 @@
+migrations: 11 | tables: 39 | enums: 30 | functions: 29 | indexes: 80
+OK: no structural problems found

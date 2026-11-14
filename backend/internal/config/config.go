@@ -40,6 +40,7 @@ type UploadConfig struct {
 	PartSize   int64         // UPLOAD_PART_SIZE_BYTES, 5 MiB..1 GiB (at most 1,024 parts per file)
 	MaxOpen    int           // UPLOAD_MAX_OPEN, unfinished uploads per user, 1..50
 	SessionTTL time.Duration // UPLOAD_SESSION_TTL, 1h..168h
+	MaxRetries int           // UPLOAD_MAX_RETRIES, reopenings of one expired upload, 0..10 (0 disables retry)
 }
 
 // Enabled reports whether uploads are configured.
@@ -268,7 +269,7 @@ func Load(getenv func(string) string) (Config, error) {
 	c.Storage = st
 
 	// ----- upload limits -----
-	up := UploadConfig{MaxBytes: 5 << 30, PartSize: 16 << 20, MaxOpen: 5, SessionTTL: 24 * time.Hour}
+	up := UploadConfig{MaxBytes: 5 << 30, PartSize: 16 << 20, MaxOpen: 5, SessionTTL: 24 * time.Hour, MaxRetries: 3}
 	int64Env := func(name string, dst *int64, lo, hi int64) {
 		v := get(name, "")
 		if v == "" {
@@ -289,6 +290,14 @@ func Load(getenv func(string) string) (Config, error) {
 			fail("UPLOAD_MAX_OPEN must be 1-50 (got %q)", v)
 		} else {
 			up.MaxOpen = n
+		}
+	}
+	if v := get("UPLOAD_MAX_RETRIES", ""); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 10 {
+			fail("UPLOAD_MAX_RETRIES must be 0-10, 0 disables retry (got %q)", v)
+		} else {
+			up.MaxRetries = n
 		}
 	}
 	if v := get("UPLOAD_SESSION_TTL", ""); v != "" {

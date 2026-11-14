@@ -39,10 +39,16 @@ type fakeStorage struct {
 	completed bool
 	size      int64 // object size after completion
 	head      []byte
+	created   int   // CreateMultipart calls
+	createErr error // makes CreateMultipart fail
 }
 
 func (f *fakeStorage) CreateMultipart(context.Context, string, string) (string, error) {
-	return "prov-1", nil
+	f.created++
+	if f.createErr != nil {
+		return "", f.createErr
+	}
+	return "prov-" + string(rune('0'+f.created)), nil
 }
 func (f *fakeStorage) PresignUploadPart(key, id string, n int, _ time.Duration) string {
 	return "https://s3.test/" + key + "?part=" + string(rune('0'+n))
@@ -120,6 +126,18 @@ type fakeUploads struct {
 	fanned    bool
 	thumbs    map[string]string // id -> key
 	caps      map[string][2]string
+
+	revives    int
+	revived    revive
+	reviveLost bool // another caller won the race / budget spent
+	reviveErr  error
+}
+
+type revive struct {
+	provider string
+	expires  time.Time
+	max      int
+	audit    repository.AuditEntry
 }
 
 func (f *fakeUploads) OpenUploads(context.Context, string) (int, error) { return f.open, nil }
@@ -145,6 +163,11 @@ func (f *fakeUploads) FinishComplete(context.Context, *repository.UploadSession,
 func (f *fakeUploads) DiscardUpload(context.Context, *repository.UploadSession, *repository.AuditEntry) error {
 	f.discarded = true
 	return nil
+}
+func (f *fakeUploads) ReviveUpload(_ context.Context, _ *repository.UploadSession, provider string, expires time.Time, max int, a repository.AuditEntry) (bool, error) {
+	f.revives++
+	f.revived = revive{provider, expires, max, a}
+	return !f.reviveLost, f.reviveErr
 }
 func (f *fakeUploads) ExpireUploads(context.Context, int) ([]repository.ExpiredUpload, error) {
 	return []repository.ExpiredUpload{{ID: "u1", StorageKey: "k", ProviderUploadID: "p"}}, nil
@@ -263,6 +286,122 @@ func TestInitPartsAndKey(t *testing.T) {
 	}
 }
 
+func expired(retries int16) *repository.UploadSession {
+	s := session("EXPIRED", 40<<20)
+	s.VideoStatus, s.VideoDeleted, s.RetryCount, s.ContentType = "FAILED", true, retries, "video/mp4"
+	return s
+}
+
+func TestRetryReopensAnExpiredUpload(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	db, st := &fakeUploads{sess: expired(1)}, &fakeStorage{}
+	svc, _ := newUploadSvc(db, st)
+	svc.now = func() time.Time { return now }
+	out, err := svc.Retry(context.Background(), testUser, testCI, upID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.UploadID != upID || out.VideoID != vidID || out.PartSize != UploadPartSize || len(out.Parts) != 3 {
+		t.Errorf("same ids and part layout expected, got %+v", out)
+	}
+	if db.revives != 1 || db.revived.provider != "prov-1" || db.revived.max != MaxUploadRetries || !db.revived.expires.Equal(now.Add(UploadTTL)) {
+		t.Errorf("revive call wrong: %d %+v", db.revives, db.revived)
+	}
+	if a := db.revived.audit; a.Action != "upload.retry" || a.TargetID == nil || *a.TargetID != vidID || a.Meta["retry"] != 2 {
+		t.Errorf("audit wrong: %+v", a)
+	}
+	if len(st.aborted) != 0 {
+		t.Errorf("the new multipart must be kept: %v", st.aborted)
+	}
+}
+
+func TestRetryOnlyForExpiredUploads(t *testing.T) {
+	for status, want := range map[string]string{"INITIATED": "upload_active", "COMPLETING": "upload_active", "COMPLETED": "not_retryable", "ABORTED": "not_retryable"} {
+		db, st := &fakeUploads{sess: session(status, 40<<20)}, &fakeStorage{}
+		svc, _ := newUploadSvc(db, st)
+		_, err := svc.Retry(context.Background(), testUser, testCI, upID)
+		if ecode(t, err) != want || st.created != 0 || db.revives != 0 {
+			t.Errorf("%s: code=%q created=%d revives=%d, want %q and no side effects", status, ecode(t, err), st.created, db.revives, want)
+		}
+	}
+}
+
+func TestRetryBudget(t *testing.T) {
+	for name, c := range map[string]struct {
+		retries int16
+		max     int
+	}{"spent": {3, 3}, "beyond": {5, 3}, "disabled": {0, 0}} {
+		db, st := &fakeUploads{sess: expired(c.retries)}, &fakeStorage{}
+		svc, _ := newUploadSvc(db, st)
+		l := DefaultUploadLimits()
+		l.MaxRetries = c.max
+		svc.WithLimits(l)
+		_, err := svc.Retry(context.Background(), testUser, testCI, upID)
+		if ecode(t, err) != "retry_limit" || st.created != 0 || db.revives != 0 {
+			t.Errorf("%s: code=%q created=%d revives=%d", name, ecode(t, err), st.created, db.revives)
+		}
+	}
+	// one retry left
+	db := &fakeUploads{sess: expired(2)}
+	svc, _ := newUploadSvc(db, &fakeStorage{})
+	if _, err := svc.Retry(context.Background(), testUser, testCI, upID); err != nil {
+		t.Errorf("2 of 3 used, one left: %v", err)
+	}
+}
+
+func TestRetryLosesTheRaceAndCleansUp(t *testing.T) {
+	db, st := &fakeUploads{sess: expired(0), reviveLost: true}, &fakeStorage{}
+	svc, _ := newUploadSvc(db, st)
+	_, err := svc.Retry(context.Background(), testUser, testCI, upID)
+	if ecode(t, err) != "not_retryable" || len(st.aborted) != 1 {
+		t.Errorf("code=%q aborted=%v: the multipart created for the lost race must be aborted", ecode(t, err), st.aborted)
+	}
+	db, st = &fakeUploads{sess: expired(0), reviveErr: errors.New("db down")}, &fakeStorage{}
+	svc, _ = newUploadSvc(db, st)
+	_, err = svc.Retry(context.Background(), testUser, testCI, upID)
+	if apperr.From(err).Status != http.StatusInternalServerError || len(st.aborted) != 1 {
+		t.Errorf("db error: status=%d aborted=%v", apperr.From(err).Status, st.aborted)
+	}
+}
+
+func TestRetryNeedsStorageAndRespectsCaps(t *testing.T) {
+	db, st := &fakeUploads{sess: expired(0)}, &fakeStorage{createErr: errors.New("s3 down")}
+	svc, _ := newUploadSvc(db, st)
+	_, err := svc.Retry(context.Background(), testUser, testCI, upID)
+	if ecode(t, err) != "storage_unavailable" || db.revives != 0 {
+		t.Errorf("storage down: code=%q revives=%d (the database must not change)", ecode(t, err), db.revives)
+	}
+	db = &fakeUploads{sess: expired(0), open: MaxOpenUploads}
+	svc, _ = newUploadSvc(db, &fakeStorage{})
+	if _, err = svc.Retry(context.Background(), testUser, testCI, upID); ecode(t, err) != "limit_reached" || db.revives != 0 {
+		t.Errorf("open-upload cap: %q", ecode(t, err))
+	}
+	off, _ := newUploadSvc(&fakeUploads{sess: expired(0)}, nil)
+	if _, err = off.Retry(context.Background(), testUser, testCI, upID); ecode(t, err) != "uploads_disabled" {
+		t.Errorf("uploads off: %q", ecode(t, err))
+	}
+	_, err = svc.Retry(context.Background(), testUser, testCI, "not-a-uuid")
+	if ecode(t, err) != "upload_not_found" {
+		t.Errorf("bad id: %q", ecode(t, err))
+	}
+}
+
+func TestStatusMarksExpiredUploadsRetryable(t *testing.T) {
+	for _, c := range []struct {
+		status    string
+		retries   int16
+		retryable bool
+	}{{"EXPIRED", 0, true}, {"EXPIRED", 2, true}, {"EXPIRED", 3, false}, {"ABORTED", 0, false}} {
+		s := session(c.status, 40<<20)
+		s.VideoDeleted, s.RetryCount = true, c.retries
+		svc, _ := newUploadSvc(&fakeUploads{sess: s}, &fakeStorage{})
+		out, err := svc.Status(context.Background(), testUser, upID)
+		if err != nil || out.Status != "failed" || out.Retryable != c.retryable || out.Error == nil {
+			t.Errorf("%s/%d: %+v err=%v, want failed, retryable=%v", c.status, c.retries, out, err, c.retryable)
+		}
+	}
+}
+
 func TestInitAcceptsAllowedFormats(t *testing.T) {
 	for ext, want := range map[string]string{".mp4": "video/mp4", ".m4v": "video/x-m4v", ".MOV": "video/quicktime", ".mkv": "video/x-matroska", ".webm": "video/webm"} {
 		db := &fakeUploads{}
@@ -277,7 +416,7 @@ func TestInitAcceptsAllowedFormats(t *testing.T) {
 
 func TestDefaultUploadLimitsMatchConstants(t *testing.T) {
 	d := DefaultUploadLimits()
-	if d.MaxBytes != MaxUploadBytes || d.PartSize != UploadPartSize || d.MaxOpen != MaxOpenUploads || d.SessionTTL != UploadTTL {
+	if d.MaxBytes != MaxUploadBytes || d.PartSize != UploadPartSize || d.MaxOpen != MaxOpenUploads || d.SessionTTL != UploadTTL || d.MaxRetries != MaxUploadRetries {
 		t.Fatalf("defaults drifted from the constants: %+v", d)
 	}
 	if d.presignPartTTL() != PresignPartTTL || d.presignPartTTL() >= d.SessionTTL {

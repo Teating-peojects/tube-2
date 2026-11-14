@@ -138,6 +138,7 @@ services:
       UPLOAD_PART_SIZE_BYTES: ${UPLOAD_PART_SIZE_BYTES:-}
       UPLOAD_MAX_OPEN: ${UPLOAD_MAX_OPEN:-}
       UPLOAD_SESSION_TTL: ${UPLOAD_SESSION_TTL:-}
+      UPLOAD_MAX_RETRIES: ${UPLOAD_MAX_RETRIES:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       redis: { condition: service_healthy }

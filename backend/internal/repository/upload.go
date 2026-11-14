@@ -43,7 +43,7 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::bigint)`
 VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::bigint, $7, $8::int, $9::int, $10::timestamptz)`
 
 	uploadCols = `s.id::text, s.user_id::text, s.video_id::text, s.storage_key, s.provider_upload_id, s.declared_content_type, s.status::text,
-  s.declared_size_bytes, s.part_size_bytes, s.part_count, s.expires_at, v.status::text, v.deleted_at IS NOT NULL`
+  s.declared_size_bytes, s.part_size_bytes, s.part_count, s.expires_at, v.status::text, v.deleted_at IS NOT NULL, s.retry_count`
 	qUploadByID = `SELECT ` + uploadCols + ` FROM upload_sessions s JOIN videos v ON v.id = s.video_id WHERE s.id = $1::uuid AND s.user_id = $2::uuid`
 
 	qBeginComplete  = `UPDATE upload_sessions SET status = 'COMPLETING', updated_at = now() WHERE id = $1::uuid AND status = 'INITIATED' AND expires_at > now()`
@@ -52,6 +52,14 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::bigint, $7, $8::int, $9::int, 
 	qVideoProcess   = `UPDATE videos SET status = 'PROCESSING', updated_at = now() WHERE id = $1::uuid AND status = 'UPLOADING'`
 	qEnqueueMeta    = `INSERT INTO video_processing_jobs (video_id, job_type) VALUES ($1::uuid, 'METADATA')
 ON CONFLICT (video_id, job_type) WHERE status IN ('QUEUED', 'PROCESSING') DO NOTHING`
+	// Retry (000011): reopen an EXPIRED session with a fresh multipart upload. Both statements must change a row,
+	// otherwise the transaction is rolled back (another caller won, the budget is spent, the video was removed).
+	qReviveSession = `UPDATE upload_sessions SET status = 'INITIATED', provider_upload_id = $2, expires_at = $3::timestamptz,
+  retry_count = retry_count + 1, last_retry_at = now(), updated_at = now()
+WHERE id = $1::uuid AND status = 'EXPIRED' AND retry_count < $4::int`
+	qReviveVideo = `UPDATE videos SET status = 'UPLOADING', deleted_at = NULL, updated_at = now()
+WHERE id = $1::uuid AND status = 'FAILED' AND deleted_at IS NOT NULL AND moderation_status = 'OK'`
+
 	qAbortSession = `UPDATE upload_sessions SET status = 'ABORTED', updated_at = now() WHERE id = $1::uuid AND status IN ('INITIATED', 'COMPLETING', 'COMPLETED')`
 	qDiscardVideo = `UPDATE videos SET status = 'FAILED', deleted_at = now(), updated_at = now() WHERE id = $1::uuid AND status <> 'PUBLISHED' AND deleted_at IS NULL`
 
@@ -112,12 +120,13 @@ type UploadSession struct {
 	PartSize, PartCount                                                                 int32
 	ExpiresAt                                                                           time.Time
 	VideoDeleted                                                                        bool
+	RetryCount                                                                          int16
 }
 
 func scanUpload(row pgx.Row) (*UploadSession, error) {
 	var s UploadSession
 	err := row.Scan(&s.ID, &s.UserID, &s.VideoID, &s.StorageKey, &s.ProviderUploadID, &s.ContentType, &s.Status,
-		&s.DeclaredSize, &s.PartSize, &s.PartCount, &s.ExpiresAt, &s.VideoStatus, &s.VideoDeleted)
+		&s.DeclaredSize, &s.PartSize, &s.PartCount, &s.ExpiresAt, &s.VideoStatus, &s.VideoDeleted, &s.RetryCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -220,6 +229,36 @@ func (r *Upload) DiscardUpload(ctx context.Context, s *UploadSession, a *AuditEn
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// ReviveUpload reopens an EXPIRED session under a new provider upload id and restores its draft video, in one
+// transaction. It returns false (and changes nothing) when another caller already revived it, the retry budget
+// maxRetries is spent, or the video can no longer be restored (published, moderated). The audit row is part of the
+// same transaction.
+func (r *Upload) ReviveUpload(ctx context.Context, s *UploadSession, providerUploadID string, expiresAt time.Time, maxRetries int, a AuditEntry) (bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, qReviveSession, s.ID, providerUploadID, expiresAt, maxRetries)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	tag, err = tx.Exec(ctx, qReviveVideo, s.VideoID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if err = audit(ctx, tx, a); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 type ExpiredUpload struct{ ID, VideoID, StorageKey, ProviderUploadID string }

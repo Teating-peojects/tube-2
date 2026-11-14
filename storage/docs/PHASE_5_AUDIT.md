@@ -80,3 +80,13 @@ limits, full cleanup, metrics, storage health, OpenAPI, upload integration tests
 | 8 age gate per request | needs decision | Unchanged; open, low priority |
 | 11 env validation | IMPLEMENTED (unit) | extended to the four upload variables |
 Phase 5 overall: still **PARTIALLY COMPLETE** (retry, cleanup, metrics, integration tests, OpenAPI, MinIO verification open).
+
+## 6. Status changes after Phase C (2026-11-14)
+| Row | Before | Now |
+|---|---|---|
+| 5.5 retry endpoint, limit, audit | **MISSING** | IMPLEMENTED and VERIFIED against real PostgreSQL: `POST /upload/{id}/retry`, `retry_count` budget (`UPLOAD_MAX_RETRIES`, default 3), audit `upload.retry`; scope = expired uploads only |
+| 5.3 status | IMPLEMENTED (unit) | adds `retryable` for expired uploads with budget left |
+| 9 DB design | VERIFIED | migration 000011 (reversible); 11 migrations, 39 tables |
+| 14 integration tests (PostgreSQL) | PARTIAL | upload retry is covered at service + repository level on real PostgreSQL (stubbed storage, not HTTP-level); init/complete/status/abort HTTP tests still open (Phase F) |
+| 6 frontend retry | PARTIAL | backend ready; no retry button/client call yet (Phase E) |
+Phase 5 overall: still **PARTIALLY COMPLETE** (cleanup/metrics/health, frontend, HTTP + MinIO integration tests, OpenAPI open).

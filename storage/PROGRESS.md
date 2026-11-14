@@ -4,7 +4,7 @@
 |---|---|---|---|
 | A | Audit and baseline | **DONE** | Real runs: Go 200/200 with PostgreSQL 16 + Redis 7 + `-race`; web 63/63; dbcheck OK |
 | B | Config and validation | **DONE** (code) — MinIO/compose not verified | Go 206/206 with PostgreSQL 16 + Redis 7 + `-race`; web 64/64, tsc and lint clean (`baseline/phaseB-*`) |
-| C | Retry and state | Not started | — |
+| C | Retry and state | **DONE** (backend, real PostgreSQL) — frontend wiring is Phase E | Go 213/213 with PostgreSQL 16 + Redis 7 + `-race`; migration 000011 up/down/up; dbcheck OK (11 migrations); mutation-checked (`baseline/phaseC-*`) |
 | D | Cleanup and reliability | Not started | — |
 | E | Frontend | Not started | — |
 | F | Integration tests | Not started | — |
@@ -17,6 +17,31 @@ Overall Phase 5: **PARTIALLY COMPLETE** (see `docs/PHASE_5_AUDIT.md`).
   (existing behaviour, unchanged). Uploads still never auto-publish: publish needs READY + consent declaration.
 - `.avi` is dropped. Allowed formats: `.mp4 .m4v .mov .mkv .webm` (all have a magic-byte check: `ftyp` or EBML).
 - Per-request age gate on upload routes: not requested, not changed (age is verified at registration).
+
+## Phase C — what changed
+Retry means: an upload whose session **expired** before it was finished (status `EXPIRED`) is reopened with a fresh
+multipart upload; the draft video keeps its id and metadata. Cancelled or rejected uploads (`ABORTED`) are final.
+
+- `db/migrations/000011_upload_retry.{up,down}.sql`: `upload_sessions.retry_count`, `last_retry_at`, CHECK 0..100. Reversible
+  (applied, reverted, re-applied and reverted twice on PostgreSQL 16; the API role reads the new columns).
+- `backend/internal/repository/upload.go`: `ReviveUpload` — one transaction: session EXPIRED -> INITIATED (new provider
+  upload id, new deadline, `retry_count + 1`) and its video FAILED/deleted -> UPLOADING, plus the audit row. Returns false and
+  changes nothing if another caller already revived it, the budget is spent, or the video is moderated/published.
+- `backend/internal/service/upload.go`: `Retry`, `presignParts` (shared with Init), `UploadLimits.MaxRetries`, `Status`
+  now returns `retryable: true` for an expired upload with budget left.
+- `backend/internal/handler/upload.go`: `POST /api/v1/upload/{id}/retry` -> 200, same body as init.
+- `backend/internal/config/config.go`, `cmd/api/main.go`, `docker-compose.yml`, `.env.example`: `UPLOAD_MAX_RETRIES` (0..10, default 3, 0 = off).
+- `backend/internal/model/studio.go`: `UploadStatus.retryable` (omitted when false, so existing responses are unchanged).
+- `backend/docs/api-contract.md`: retry endpoint, `retryable`, new error codes; also fixes the `.avi` mention Phase B left behind.
+- Tests: service unit (+6), config (extended), `internal/handler/upload_retry_integration_test.go` (real schema + real
+  repository, stubbed object storage): lifecycle, ownership, budget, concurrent retries, the exact race window at the
+  repository, cancel after retry, moderated video. Breaking the moderation guard or the budget guard in the SQL makes it fail.
+
+Behaviour notes / risks:
+- The browser must upload the **same file** again: size and part layout are fixed by the session. A different file ends in `422 parts_mismatch`/`size_mismatch` at complete.
+- Errors: `409 upload_active`, `409 not_retryable`, `409 retry_limit`, `422 limit_reached` (open-upload cap), `429` rate limit (20 retries/hour), `502 storage_unavailable`, `404 upload_not_found` (also for other users' uploads).
+- If the new multipart cannot be recorded (lost race, database error) it is aborted straight away. An old multipart whose abort failed in the janitor is not touched here (orphan sweep is Phase D).
+- Not wired in the web app yet: no retry button or API client call (Phase E). Not verified: real object storage, `docker compose`.
 
 ## Phase B — what changed
 Outside storage/ (these must compile into the API/web modules):

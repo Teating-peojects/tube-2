@@ -6,7 +6,7 @@
 | B | Config and validation | **DONE** (code) — MinIO/compose not verified | Go 206/206 with PostgreSQL 16 + Redis 7 + `-race`; web 64/64, tsc and lint clean (`baseline/phaseB-*`) |
 | C | Retry and state | **DONE** (backend, real PostgreSQL) — frontend wiring is Phase E | Go 213/213 with PostgreSQL 16 + Redis 7 + `-race`; migration 000011 up/down/up; dbcheck OK (11 migrations); mutation-checked (`baseline/phaseC-*`) |
 | D | Cleanup and reliability | **DONE** (code) — metrics have no scrape endpoint; real MinIO not verified | Go 226/226 with PostgreSQL 16 + Redis 7 + `-race`; migration 000012 up/down/up; dbcheck OK (12 migrations); mutation-checked (`baseline/phaseD-*`) |
-| E | Frontend | Not started | — |
+| E | Frontend | **DONE** (unit level) — e2e/real browser not run | Vitest 105/105 (+41), tsc and lint clean, mutation-checked (`baseline/phaseE-*`) |
 | F | Integration tests | Not started | — |
 | G | OpenAPI, docs, report | Not started | — |
 
@@ -17,6 +17,19 @@ Overall Phase 5: **PARTIALLY COMPLETE** (see `docs/PHASE_5_AUDIT.md`).
   (existing behaviour, unchanged). Uploads still never auto-publish: publish needs READY + consent declaration.
 - `.avi` is dropped. Allowed formats: `.mp4 .m4v .mov .mkv .webm` (all have a magic-byte check: `ftyp` or EBML).
 - Per-request age gate on upload routes: not requested, not changed (age is verified at registration).
+
+## Phase E — what changed
+Details: `docs/PHASE_5_FRONTEND.md`. Only `web/` (and docs) changed; no backend change.
+- `lib/uploader.ts`: stall watchdog in `xhrPut` (60 s without progress = network error), `browserOnline`/`waitForOnline`, offline gate in `uploadParts` (waits without using attempts, resumes by itself), no retry for 4xx other than 408/429.
+- `features/upload/useUpload.ts` (rewritten): generation guard fixes the cancel-while-preparing race; one automatic recovery through `POST /upload/:id/retry`, with fallback to abort-then-new-session; error classification (`classify`) with per-code messages and `canRetry`; auto-resume on `online`; `beforeunload` sets `returnValue`; reset never aborts a finished upload.
+- `UploadProgress.tsx`: offline state, "Choose another file" when retrying cannot help, 44 px buttons. `UploadView.tsx` passes the new props.
+- `services/upload.ts` + mock + `config/endpoints.ts` + `types`: `retryUpload`, `endpoints.upload.retry`, `ServerUploadStatus.retryable`.
+- Tests (+41): uploader (offline gate, 4xx vs transient, `waitForOnline`, `xhrPut` with a fake XHR: ETag, status, stall, progress re-arming, abort), `UploadProgress` (+4), `useUpload` (20: happy path, cancel races, recovery paths, server refusals, connection loss, `beforeunload`, reset).
+- `web/README.md` updated.
+
+Behaviour notes / risks:
+- A reopened (expired) upload re-sends all parts: a 5 GiB upload restarts from zero. A reload still cannot resume (no file handle).
+- Not run: Playwright e2e, `next build`, a real browser against a real API/bucket.
 
 ## Phase D — what changed
 Details and operating notes: `docs/PHASE_5_CLEANUP.md`.

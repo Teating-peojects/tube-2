@@ -176,7 +176,8 @@ export function UploadView() {
 
         <aside className="order-1 space-y-5 lg:order-2 lg:sticky lg:top-24 lg:self-start">
           <UploadProgress phase={phase} progress={u.progress} serverProgress={u.serverStatus?.progress ?? 0} fileName={u.fileInfo?.name ?? ""}
-            error={u.error} failedAtProcessing={u.processingFailed} onCancel={() => { u.cancel(); setQueued(null); }} onRetry={u.retry} onReset={reset} />
+            error={u.error} failedAtProcessing={u.processingFailed} offline={u.offline} canRetry={u.canRetry}
+            onCancel={() => { u.cancel(); setQueued(null); }} onRetry={u.retry} onReset={reset} />
           <ThumbnailPicker candidates={u.serverStatus?.thumbnails ?? []} selected={thumb} onSelect={setThumb} customFile={thumbFile} onCustomFile={setThumbFile} />
         </aside>
       </div>

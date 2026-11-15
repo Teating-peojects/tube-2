@@ -33,7 +33,7 @@ that must change in `backend/` or `web/` (they must compile into those modules).
 - Counters for init / success / failure / verification failure / expired / cleanup failure.
 - Edits outside storage/: `backend/internal/service/upload.go`, `backend/cmd/api/main.go`, `handler/health.go`.
 
-## Phase E — Frontend
+## Phase E — Frontend  (status: DONE at unit level, see PROGRESS.md and PHASE_5_FRONTEND.md)
 - Verify and fill: cancel, retry, speed/ETA, `beforeunload` guard, network-loss handling, mobile layout.
 - Edits outside storage/: `web/src/features/upload`, `web/src/lib/uploader.ts`, tests.
 

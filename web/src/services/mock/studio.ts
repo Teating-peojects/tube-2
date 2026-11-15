@@ -13,7 +13,7 @@ function page<T>(list: T[], cursor?: string, size = 10): Paginated<T> {
 }
 
 // ---- Upload (simulated) ----
-const sessions = new Map<string, { t0: number | null; published: boolean }>();
+const sessions = new Map<string, { t0: number | null; published: boolean; init?: UploadInit }>();
 
 export const mockPut: PutPart = (blob, _url, onProgress, signal) =>
   new Promise((resolve, reject) => {
@@ -32,8 +32,16 @@ export async function mockInit(v: { size: number }): Promise<UploadInit> {
   const uploadId = `up-${Date.now()}`;
   const partSize = Math.max(5 * 1024 ** 2, Math.ceil(v.size / 1000));
   const n = Math.max(1, Math.ceil(v.size / partSize));
-  sessions.set(uploadId, { t0: null, published: false });
-  return { uploadId, videoId: `new-${uploadId}`, partSize, parts: Array.from({ length: n }, (_, i) => ({ partNumber: i + 1, url: `mock://${uploadId}/${i + 1}` })) };
+  const init = { uploadId, videoId: `new-${uploadId}`, partSize, parts: Array.from({ length: n }, (_, i) => ({ partNumber: i + 1, url: `mock://${uploadId}/${i + 1}` })) };
+  sessions.set(uploadId, { t0: null, published: false, init });
+  return init;
+}
+/** Simulates POST /upload/:id/retry: same ids, new part URLs. */
+export async function mockRetry(id: string): Promise<UploadInit> {
+  await wait(300);
+  const init = sessions.get(id)?.init;
+  if (!init) throw new ApiError(404, "", "upload_not_found");
+  return { ...init, parts: init.parts.map((p) => ({ ...p, url: `${p.url}?retry=${Date.now()}` })) };
 }
 export async function mockComplete(id: string) { await wait(300); const s = sessions.get(id); if (s) s.t0 = Date.now(); }
 export async function mockStatus(id: string): Promise<ServerUploadStatus> {

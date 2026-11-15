@@ -105,7 +105,7 @@ export type AppNotification = { id: string; type: NotificationType; title: strin
 export type VideoVisibility = "public" | "unlisted" | "private";
 export type UploadPhase = "idle" | "preparing" | "uploading" | "processing" | "encoding" | "ready" | "publishing" | "completed" | "failed" | "cancelled";
 export type UploadInit = { uploadId: string; videoId: string; partSize: number; parts: { partNumber: number; url: string }[] };
-export type ServerUploadStatus = { status: "processing" | "encoding" | "ready" | "published" | "failed"; progress: number; thumbnails: string[]; error?: string };
+export type ServerUploadStatus = { status: "processing" | "encoding" | "ready" | "published" | "failed"; progress: number; thumbnails: string[]; error?: string; /** an expired upload that POST /upload/:id/retry can reopen */ retryable?: boolean };
 export type UploadMeta = {
   title: string; description: string; category: string; tags: string[]; visibility: VideoVisibility;
   comments: "on" | "off" | "review"; language: string; ageGate: boolean;

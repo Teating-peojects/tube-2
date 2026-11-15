@@ -5,19 +5,25 @@ import (
 	"crypto/sha256"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Integration tests against a real PostgreSQL built from db/migrations. They run as the real
 // least-privilege role (redxtube_worker), so a missing GRANT shows up here and not in production.
 //
-//	TEST_ADMIN_DATABASE_URL   superuser (fixtures)
-//	TEST_WORKER_DATABASE_URL  redxtube_worker
+//	TEST_WORKER_ADMIN_DATABASE_URL  superuser on the WORKER database (fixtures); falls back to
+//	                                TEST_ADMIN_DATABASE_URL
+//	TEST_WORKER_DATABASE_URL        redxtube_worker on the same database
+//
+// Use a database of their own (db/scripts/test-db.sh builds it): `go test ./...` runs packages in
+// parallel and the handler tests TRUNCATE the tables they share.
 type pgEnv struct {
 	t      *testing.T
 	admin  *pgxpool.Pool
@@ -26,9 +32,12 @@ type pgEnv struct {
 }
 
 func newPGEnv(t *testing.T) *pgEnv {
-	adminURL, workerURL := os.Getenv("TEST_ADMIN_DATABASE_URL"), os.Getenv("TEST_WORKER_DATABASE_URL")
+	adminURL, workerURL := os.Getenv("TEST_WORKER_ADMIN_DATABASE_URL"), os.Getenv("TEST_WORKER_DATABASE_URL")
+	if adminURL == "" {
+		adminURL = os.Getenv("TEST_ADMIN_DATABASE_URL")
+	}
 	if adminURL == "" || workerURL == "" {
-		t.Skip("TEST_ADMIN_DATABASE_URL / TEST_WORKER_DATABASE_URL not set")
+		t.Skip("TEST_WORKER_ADMIN_DATABASE_URL (or TEST_ADMIN_DATABASE_URL) / TEST_WORKER_DATABASE_URL not set")
 	}
 	ctx := context.Background()
 	a, err := pgxpool.New(ctx, adminURL)
@@ -103,23 +112,34 @@ VALUES ($1::uuid, $2::uuid, 'Clip', 'clip.mp4', $3, 1000, 'PROCESSING')`, id, e.
 
 func (e *pgEnv) store(name string) *PG { return NewPG(e.worker, name) }
 
+// claimVideo is Claim restricted to one video: the production SQL plus a video filter, so a test
+// never claims (or livelocks on) jobs that belong to other tests or earlier runs.
+func claimVideo(ctx context.Context, s *PG, video string) (*Job, error) {
+	q := strings.Replace(qClaim, "WHERE q.status = 'QUEUED'", "WHERE q.video_id = $2::uuid AND q.status = 'QUEUED'", 1)
+	if q == qClaim {
+		panic("qClaim changed: update claimVideo")
+	}
+	var j Job
+	err := s.pool.QueryRow(ctx, q, s.workerID, video).Scan(&j.ID, &j.VideoID, &j.Type, &j.Attempts, &j.MaxAttempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
 func claimFor(t *testing.T, s *PG, video string) Job {
 	t.Helper()
-	for i := 0; i < 20; i++ { // other tests' jobs may be in the table: claim until it is ours
-		j, err := s.Claim(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if j == nil {
-			break
-		}
-		if j.VideoID == video {
-			return *j
-		}
-		_ = s.Release(context.Background(), *j)
+	j, err := claimVideo(context.Background(), s, video)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("no claimable job for %s", video)
-	return Job{}
+	if j == nil {
+		t.Fatalf("no claimable job for %s", video)
+	}
+	return *j
 }
 
 var ctxb = context.Background()
@@ -137,23 +157,16 @@ func TestPGFullChain(t *testing.T) {
 		wg.Add(1)
 		go func(w *PG) {
 			defer wg.Done()
-			for {
-				j, err := w.Claim(ctxb)
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				if j == nil {
-					return
-				}
-				if j.VideoID == vid {
-					mu.Lock()
-					wins++
-					won = *j
-					mu.Unlock()
-					return
-				}
-				_ = w.Release(ctxb, *j)
+			j, err := claimVideo(ctxb, w, vid)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if j != nil {
+				mu.Lock()
+				wins++
+				won = *j
+				mu.Unlock()
 			}
 		}(w)
 	}
@@ -271,7 +284,7 @@ func TestPGRetryBackoffThenFail(t *testing.T) {
 	if e.num(`SELECT EXTRACT(EPOCH FROM scheduled_at - now())::int FROM video_processing_jobs WHERE id = $1::uuid`, j.ID) < 20 {
 		t.Fatal("no backoff applied")
 	}
-	if got, _ := s.Claim(ctxb); got != nil && got.VideoID == vid {
+	if got, _ := claimVideo(ctxb, s, vid); got != nil {
 		t.Fatal("job claimed before its backoff elapsed")
 	}
 	e.exec(`UPDATE video_processing_jobs SET scheduled_at = now() WHERE id = $1::uuid`, j.ID)

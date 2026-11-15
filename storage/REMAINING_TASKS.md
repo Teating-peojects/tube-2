@@ -3,7 +3,7 @@
 1. ~~Creator approval~~ decided: none. ~~`.avi`~~ decided: dropped, `.m4v` added. ~~Configurable limits~~ done (Phase B).
 2. Open, low priority: per-request age gate on upload routes (age is verified at registration only).
 4. ~~Retry endpoint, retry counter and limit~~ done (Phase C). Frontend retry UI is Phase E.
-5. Extend cleanup: orphans, retention, metrics, storage health (Phase D).
+5. ~~Cleanup, retention, storage health, counters~~ done (Phase D). Still open from it: a scrape endpoint for the counters (needs an auth/network decision) and the bucket lifecycle rule for multipart uploads that never got a row (docs only).
 6. Verify/fill frontend: ETA, `beforeunload`, network loss, e2e (Phase E).
 7. Upload HTTP integration tests and MinIO integration test + CI service (Phase F).
 8. OpenAPI and the remaining PHASE_5 documents (Phase G).

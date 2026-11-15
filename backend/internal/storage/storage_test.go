@@ -205,3 +205,24 @@ func TestNewValidatesConfig(t *testing.T) {
 		t.Fatalf("default port must be stripped: %v %v", c, err)
 	}
 }
+
+func TestPingChecksTheBucket(t *testing.T) {
+	status := http.StatusOK
+	var method, path string
+	_, c := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.WriteHeader(status)
+	})
+	if err := c.Ping(context.Background()); err != nil {
+		t.Fatalf("healthy bucket: %v", err)
+	}
+	if method != http.MethodHead || strings.Count(strings.Trim(path, "/"), "/") != 0 {
+		t.Errorf("Ping must HEAD the bucket itself, got %s %s", method, path)
+	}
+	for _, code := range []int{http.StatusNotFound, http.StatusForbidden} {
+		status = code
+		if err := c.Ping(context.Background()); err == nil {
+			t.Errorf("status %d must be an error", code)
+		}
+	}
+}

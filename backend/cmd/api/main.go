@@ -19,6 +19,7 @@ import (
 	"github.com/redxtube/api/internal/handler"
 	"github.com/redxtube/api/internal/mail"
 	"github.com/redxtube/api/internal/media"
+	"github.com/redxtube/api/internal/metrics"
 	"github.com/redxtube/api/internal/middleware"
 	"github.com/redxtube/api/internal/ratelimit"
 	"github.com/redxtube/api/internal/realtime"
@@ -105,12 +106,18 @@ func run() error {
 	} else {
 		log.Warn("STORAGE_* not set: upload endpoints answer 503 uploads_disabled")
 	}
+	counters := metrics.New()
+	optional := map[string]handler.Pinger{}
+	if p, ok := store.(handler.Pinger); ok { // object storage is optional for readiness: only uploads depend on it
+		optional["storage"] = p
+	}
 	bus := realtime.NewBus(rdb, log)
 	hub := ws.NewHub()
 	go bus.Run(ctx, hub)
 	ipKey := auth.DeriveKeys(cfg.AuthSecret).IP
 	uploadSvc := service.NewUpload(repository.NewUpload(pool), store, limiter, ipKey, urls, bus, log).WithLimits(service.UploadLimits{
-		MaxBytes: cfg.Upload.MaxBytes, PartSize: cfg.Upload.PartSize, MaxOpen: cfg.Upload.MaxOpen, SessionTTL: cfg.Upload.SessionTTL, MaxRetries: cfg.Upload.MaxRetries})
+		MaxBytes: cfg.Upload.MaxBytes, PartSize: cfg.Upload.PartSize, MaxOpen: cfg.Upload.MaxOpen, SessionTTL: cfg.Upload.SessionTTL, MaxRetries: cfg.Upload.MaxRetries,
+		ExpiredRetention: cfg.Upload.ExpiredRetention, CleanupDelay: cfg.Upload.CleanupDelay}).WithMetrics(counters)
 	notifRepo := repository.NewNotifications(pool)
 	notifSvc := service.NewNotifications(notifRepo, limiter, log)
 	adminSvc := service.NewAdmin(repository.NewAdmin(pool), limiter, ipKey, log)
@@ -136,6 +143,7 @@ func run() error {
 				"postgres": pool,
 				"redis":    cache.Pinger{C: rdb},
 			},
+			Optional: optional,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -144,7 +152,7 @@ func run() error {
 		MaxHeaderBytes:    16 << 10,
 	}
 
-	go janitor(ctx, log, uploadSvc, adminSvc)
+	go janitor(ctx, log, uploadSvc, adminSvc, counters)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -189,10 +197,10 @@ func healthcheck() int {
 
 // janitor closes expired upload sessions (freeing their storage) and lifts finished suspensions. Every API
 // instance runs it; the database hands each expired row to exactly one of them.
-func janitor(ctx context.Context, log *slog.Logger, up *service.Upload, adm *service.Admin) {
+func janitor(ctx context.Context, log *slog.Logger, up *service.Upload, adm *service.Admin, counters *metrics.Counters) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
-	for {
+	for tick := 1; ; tick++ {
 		select {
 		case <-ctx.Done():
 			return
@@ -203,12 +211,33 @@ func janitor(ctx context.Context, log *slog.Logger, up *service.Upload, adm *ser
 			} else if n > 0 {
 				log.Info("expired uploads closed", "count", n)
 			}
+			if r, err := up.SweepStorage(jctx); err != nil {
+				log.Warn("upload storage sweep failed", "err", err.Error())
+			} else if r.Finalized+r.Cleaned+r.Failed > 0 {
+				log.Info("upload storage sweep", "finalized", r.Finalized, "cleaned", r.Cleaned, "failed", r.Failed)
+			}
 			if n, err := adm.ExpireSuspensions(jctx); err != nil {
 				log.Warn("suspension expiry failed", "err", err.Error())
 			} else if n > 0 {
 				log.Info("suspensions lifted", "count", n)
 			}
 			cancel()
+			if tick%10 == 0 { // every ten minutes: the counters since start, as one structured log line
+				logCounters(log, counters)
+			}
 		}
 	}
+}
+
+// logCounters writes the in-process counters as a single log line (there is no scrape endpoint yet).
+func logCounters(log *slog.Logger, c *metrics.Counters) {
+	values, names := c.Snapshot()
+	if len(names) == 0 {
+		return
+	}
+	args := make([]any, 0, 2*len(names))
+	for _, n := range names {
+		args = append(args, n, values[n])
+	}
+	log.Info("upload counters since start", args...)
 }

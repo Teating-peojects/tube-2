@@ -90,3 +90,14 @@ Phase 5 overall: still **PARTIALLY COMPLETE** (retry, cleanup, metrics, integrat
 | 14 integration tests (PostgreSQL) | PARTIAL | upload retry is covered at service + repository level on real PostgreSQL (stubbed storage, not HTTP-level); init/complete/status/abort HTTP tests still open (Phase F) |
 | 6 frontend retry | PARTIAL | backend ready; no retry button/client call yet (Phase E) |
 Phase 5 overall: still **PARTIALLY COMPLETE** (cleanup/metrics/health, frontend, HTTP + MinIO integration tests, OpenAPI open).
+
+## 7. Status changes after Phase D (2026-11-14)
+| Row | Before | Now |
+|---|---|---|
+| 12 cleanup of expired sessions + multipart abort | IMPLEMENTED (unit) | unchanged, plus a retried safety net with backoff |
+| 12 orphan / cancelled / failed objects, configurable retention | **MISSING / not confirmed** | IMPLEMENTED and VERIFIED on real PostgreSQL (stubbed storage): `SweepStorage`, `UPLOAD_CLEANUP_DELAY`, `UPLOAD_EXPIRED_RETENTION`. **Gap:** multipart uploads that never got a database row need a bucket lifecycle rule (documented, not configured) |
+| 15 storage health check | **MISSING** | IMPLEMENTED (unit): optional `/ready` dependency, reported as `degraded`, never 503 |
+| 15 metrics | **MISSING** | **PARTIAL:** in-process counters + a periodic log line; no scrape endpoint |
+| 9 DB design | VERIFIED | migration 000012 (reversible): 12 migrations, 39 tables, 82 indexes |
+| 14 integration tests (PostgreSQL) | PARTIAL | + cleanup flow at service + repository level; upload HTTP-level tests still open (Phase F) |
+Phase 5 overall: still **PARTIALLY COMPLETE** (frontend wiring, HTTP + MinIO integration tests, OpenAPI, metrics endpoint, lifecycle rule open).

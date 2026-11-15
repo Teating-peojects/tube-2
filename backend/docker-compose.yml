@@ -139,6 +139,8 @@ services:
       UPLOAD_MAX_OPEN: ${UPLOAD_MAX_OPEN:-}
       UPLOAD_SESSION_TTL: ${UPLOAD_SESSION_TTL:-}
       UPLOAD_MAX_RETRIES: ${UPLOAD_MAX_RETRIES:-}
+      UPLOAD_EXPIRED_RETENTION: ${UPLOAD_EXPIRED_RETENTION:-}
+      UPLOAD_CLEANUP_DELAY: ${UPLOAD_CLEANUP_DELAY:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       redis: { condition: service_healthy }

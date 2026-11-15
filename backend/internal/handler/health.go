@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/redxtube/api/internal/httpx"
@@ -17,9 +18,10 @@ type Pinger interface {
 
 // Health serves liveness (/health) and readiness (/ready).
 type Health struct {
-	Checks  map[string]Pinger // name -> dependency
-	Timeout time.Duration     // per-check timeout
-	Log     *slog.Logger
+	Checks   map[string]Pinger // name -> required dependency: a failure makes /ready answer 503
+	Optional map[string]Pinger // name -> optional dependency: a failure is reported ("degraded") but /ready stays 200
+	Timeout  time.Duration     // per-check timeout
+	Log      *slog.Logger
 }
 
 // Live reports that the process is up. It never touches dependencies, so an
@@ -52,9 +54,29 @@ func (h Health) Ready(w http.ResponseWriter, r *http.Request) {
 		results[name] = "ok"
 	}
 
+	// Optional dependencies (object storage) are reported but never take the API out of rotation: reads, login and
+	// everything except uploading keep working without them.
+	var degraded []string
+	for name, p := range h.Optional {
+		if err := p.Ping(ctx); err != nil {
+			degraded = append(degraded, name)
+			results[name] = "error"
+			if h.Log != nil {
+				h.Log.WarnContext(r.Context(), "optional dependency check failed", "dependency", name, "err", err.Error())
+			}
+			continue
+		}
+		results[name] = "ok"
+	}
+	sort.Strings(degraded)
+
 	status, code := "ok", http.StatusOK
 	if !healthy {
 		status, code = "unavailable", http.StatusServiceUnavailable
 	}
-	httpx.JSON(w, code, map[string]any{"status": status, "checks": results})
+	body := map[string]any{"status": status, "checks": results}
+	if len(degraded) > 0 {
+		body["degraded"] = degraded
+	}
+	httpx.JSON(w, code, body)
 }

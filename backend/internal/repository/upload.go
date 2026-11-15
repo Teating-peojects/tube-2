@@ -55,10 +55,33 @@ ON CONFLICT (video_id, job_type) WHERE status IN ('QUEUED', 'PROCESSING') DO NOT
 	// Retry (000011): reopen an EXPIRED session with a fresh multipart upload. Both statements must change a row,
 	// otherwise the transaction is rolled back (another caller won, the budget is spent, the video was removed).
 	qReviveSession = `UPDATE upload_sessions SET status = 'INITIATED', provider_upload_id = $2, expires_at = $3::timestamptz,
-  retry_count = retry_count + 1, last_retry_at = now(), updated_at = now()
+  retry_count = retry_count + 1, last_retry_at = now(), updated_at = now(),
+  storage_cleaned_at = NULL, cleanup_attempts = 0, cleanup_next_at = NULL
 WHERE id = $1::uuid AND status = 'EXPIRED' AND retry_count < $4::int`
 	qReviveVideo = `UPDATE videos SET status = 'UPLOADING', deleted_at = NULL, updated_at = now()
 WHERE id = $1::uuid AND status = 'FAILED' AND deleted_at IS NOT NULL AND moderation_status = 'OK'`
+
+	// Cleanup (000012): free the storage of closed sessions. A session is picked up once it has been closed for $1
+	// seconds (the immediate best-effort paths had their chance) and is not waiting out a failure backoff.
+	qClosedUploads = `SELECT s.id::text, s.video_id::text, s.storage_key, s.provider_upload_id, s.status::text, v.status::text
+FROM upload_sessions s JOIN videos v ON v.id = s.video_id
+WHERE s.status IN ('EXPIRED', 'ABORTED') AND s.storage_cleaned_at IS NULL
+  AND s.updated_at < now() - make_interval(secs => $1::double precision)
+  AND (s.cleanup_next_at IS NULL OR s.cleanup_next_at <= now())
+ORDER BY COALESCE(s.cleanup_next_at, s.updated_at) LIMIT $2::int`
+	// The provider upload id guards against a concurrent retry: a revived session has a new one and is left alone.
+	qMarkCleaned = `UPDATE upload_sessions SET storage_cleaned_at = now(), cleanup_next_at = NULL
+WHERE id = $1::uuid AND status IN ('EXPIRED', 'ABORTED') AND provider_upload_id = $2 AND storage_cleaned_at IS NULL`
+	qCleanupFailed = `UPDATE upload_sessions SET cleanup_attempts = LEAST(cleanup_attempts + 1, 1000),
+  cleanup_next_at = now() + make_interval(mins => LEAST(1 << LEAST(cleanup_attempts, 9), 360))
+WHERE id = $1::uuid AND status IN ('EXPIRED', 'ABORTED') AND provider_upload_id = $2 AND storage_cleaned_at IS NULL
+RETURNING cleanup_attempts::int`
+	// An expired upload stays retryable for a while; after that it is final (ABORTED) and its storage is deleted.
+	qFinalizeExpired = `UPDATE upload_sessions SET status = 'ABORTED', storage_cleaned_at = NULL, cleanup_attempts = 0,
+  cleanup_next_at = NULL, updated_at = now()
+WHERE id IN (SELECT i.id FROM upload_sessions i WHERE i.status = 'EXPIRED'
+             AND i.expires_at < now() - make_interval(secs => $1::double precision)
+             ORDER BY i.expires_at LIMIT $2::int FOR UPDATE SKIP LOCKED)`
 
 	qAbortSession = `UPDATE upload_sessions SET status = 'ABORTED', updated_at = now() WHERE id = $1::uuid AND status IN ('INITIATED', 'COMPLETING', 'COMPLETED')`
 	qDiscardVideo = `UPDATE videos SET status = 'FAILED', deleted_at = now(), updated_at = now() WHERE id = $1::uuid AND status <> 'PUBLISHED' AND deleted_at IS NULL`
@@ -259,6 +282,51 @@ func (r *Upload) ReviveUpload(ctx context.Context, s *UploadSession, providerUpl
 		return false, err
 	}
 	return true, tx.Commit(ctx)
+}
+
+// ClosedUpload is a closed session whose storage may still need freeing.
+type ClosedUpload struct{ ID, VideoID, StorageKey, ProviderUploadID, Status, VideoStatus string }
+
+// ClosedUploads lists sessions closed for at least delay whose storage has not been freed yet.
+func (r *Upload) ClosedUploads(ctx context.Context, delay time.Duration, limit int) ([]ClosedUpload, error) {
+	rows, err := r.pool.Query(ctx, qClosedUploads, delay.Seconds(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ClosedUpload
+	for rows.Next() {
+		var c ClosedUpload
+		if err := rows.Scan(&c.ID, &c.VideoID, &c.StorageKey, &c.ProviderUploadID, &c.Status, &c.VideoStatus); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// MarkCleaned records that the session's storage is gone. False: the session changed meanwhile (revived by a retry).
+func (r *Upload) MarkCleaned(ctx context.Context, c ClosedUpload) (bool, error) {
+	tag, err := r.pool.Exec(ctx, qMarkCleaned, c.ID, c.ProviderUploadID)
+	return tag.RowsAffected() == 1, err
+}
+
+// CleanupFailed counts a failed attempt and postpones the next one (1, 2, 4 ... at most 360 minutes). It returns
+// the number of failed attempts so far, 0 when the session changed meanwhile.
+func (r *Upload) CleanupFailed(ctx context.Context, c ClosedUpload) (int, error) {
+	var attempts int
+	err := r.pool.QueryRow(ctx, qCleanupFailed, c.ID, c.ProviderUploadID).Scan(&attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return attempts, err
+}
+
+// FinalizeExpired turns expired sessions whose deadline passed more than retention ago into ABORTED, so their
+// storage is deleted and they can no longer be retried. SKIP LOCKED makes it safe on every API instance.
+func (r *Upload) FinalizeExpired(ctx context.Context, retention time.Duration, limit int) (int, error) {
+	tag, err := r.pool.Exec(ctx, qFinalizeExpired, retention.Seconds(), limit)
+	return int(tag.RowsAffected()), err
 }
 
 type ExpiredUpload struct{ ID, VideoID, StorageKey, ProviderUploadID string }

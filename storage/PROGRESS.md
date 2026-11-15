@@ -5,7 +5,7 @@
 | A | Audit and baseline | **DONE** | Real runs: Go 200/200 with PostgreSQL 16 + Redis 7 + `-race`; web 63/63; dbcheck OK |
 | B | Config and validation | **DONE** (code) — MinIO/compose not verified | Go 206/206 with PostgreSQL 16 + Redis 7 + `-race`; web 64/64, tsc and lint clean (`baseline/phaseB-*`) |
 | C | Retry and state | **DONE** (backend, real PostgreSQL) — frontend wiring is Phase E | Go 213/213 with PostgreSQL 16 + Redis 7 + `-race`; migration 000011 up/down/up; dbcheck OK (11 migrations); mutation-checked (`baseline/phaseC-*`) |
-| D | Cleanup and reliability | Not started | — |
+| D | Cleanup and reliability | **DONE** (code) — metrics have no scrape endpoint; real MinIO not verified | Go 226/226 with PostgreSQL 16 + Redis 7 + `-race`; migration 000012 up/down/up; dbcheck OK (12 migrations); mutation-checked (`baseline/phaseD-*`) |
 | E | Frontend | Not started | — |
 | F | Integration tests | Not started | — |
 | G | OpenAPI, docs, report | Not started | — |
@@ -17,6 +17,21 @@ Overall Phase 5: **PARTIALLY COMPLETE** (see `docs/PHASE_5_AUDIT.md`).
   (existing behaviour, unchanged). Uploads still never auto-publish: publish needs READY + consent declaration.
 - `.avi` is dropped. Allowed formats: `.mp4 .m4v .mov .mkv .webm` (all have a magic-byte check: `ftyp` or EBML).
 - Per-request age gate on upload routes: not requested, not changed (age is verified at registration).
+
+## Phase D — what changed
+Details and operating notes: `docs/PHASE_5_CLEANUP.md`.
+- `db/migrations/000012_upload_cleanup.{up,down}.sql`: `storage_cleaned_at`, `cleanup_attempts`, `cleanup_next_at` + two partial indexes (reversible).
+- `repository/upload.go`: `ClosedUploads`, `MarkCleaned`, `CleanupFailed` (backoff), `FinalizeExpired`; `ReviveUpload` resets the bookkeeping.
+- `service/upload.go`: `SweepStorage`/`freeStorage` (EXPIRED frees the multipart only, ABORTED also deletes the video's objects, PUBLISHED is never touched), retry window (`ExpiredRetention`), `Counter` + counters at every lifecycle step.
+- `internal/metrics` (new): in-process counters; the janitor logs them every 10 minutes.
+- `storage.Client.Ping` (HEAD bucket); `handler.Health.Optional`: `/ready` reports storage as `degraded` but stays 200; wired in `cmd/api/main.go`; the janitor runs the sweep every minute.
+- Config: `UPLOAD_EXPIRED_RETENTION` (1h..2160h, default 168h), `UPLOAD_CLEANUP_DELAY` (1m..24h, default 10m); `docker-compose.yml`, `.env.example`, `README.md` (`/ready`), `api-contract.md` updated.
+- Tests (+13): storage Ping, metrics (2, one concurrent), health (optional vs required), config, service (7: sweep outcomes, failure/starvation, published and malformed-id guards, configured times, retry window, counters), and `upload_cleanup_integration_test.go` on the real schema. Mutation checks: removing any of the EXPIRED-keeps-key rule, the failure backoff, the published guard, the revive reset, or the provider-id guard (in `MarkCleaned` and `CleanupFailed`) makes a test fail.
+
+Behaviour notes / risks:
+- Existing closed sessions (before this migration) have `storage_cleaned_at IS NULL`, so the first sweeps work through that backlog (50 per minute per instance); every step is idempotent. Old ABORTED sessions get their `uploads/`, `thumbs/`, `captions/` prefixes deleted: intended, but it is a one-time bulk delete in production.
+- The retry window is new behaviour: an upload that expired more than 7 days ago can no longer be retried (it was unlimited in Phase C).
+- Not verified: real MinIO/S3, `docker compose`, bucket lifecycle rules (documented only).
 
 ## Phase C — what changed
 Retry means: an upload whose session **expired** before it was finished (status `EXPIRED`) is reopened with a fresh

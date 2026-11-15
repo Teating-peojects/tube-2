@@ -65,6 +65,18 @@ func (r *Registry) AddCollector(f func(*Writer)) {
 	r.mu.Unlock()
 }
 
+// AddCounters exposes an in-process Counters (see counters.go) as one labelled counter family:
+// name{event="<counter name>"} value. Counter names are fixed in code, never user input.
+func (r *Registry) AddCounters(name, help string, c *Counters) {
+	r.AddCollector(func(w *Writer) {
+		snap, names := c.Snapshot()
+		fmt.Fprintf(w.w, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
+		for _, n := range names {
+			fmt.Fprintf(w.w, "%s%s %d\n", name, fmtLabels(nil, []string{"event", n}), snap[n])
+		}
+	})
+}
+
 func (r *Registry) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet && req.Method != http.MethodHead {

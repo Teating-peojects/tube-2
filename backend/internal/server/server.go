@@ -17,9 +17,10 @@ import (
 
 // Deps are the dependencies the HTTP layer needs.
 type Deps struct {
-	Cfg    config.Config
-	Log    *slog.Logger
-	Checks map[string]handler.Pinger
+	Cfg      config.Config
+	Log      *slog.Logger
+	Checks   map[string]handler.Pinger // required dependencies
+	Optional map[string]handler.Pinger // optional dependencies (reported, never fail /ready)
 	// Catalog serves the read-only discovery API; nil disables it (tests, early phases).
 	Catalog *handler.Catalog
 	// Auth serves accounts, sessions and the age gate; nil disables auth (and the age gate on the catalog).
@@ -46,7 +47,7 @@ type Deps struct {
 func New(d Deps) http.Handler {
 	mux := http.NewServeMux()
 
-	health := handler.Health{Checks: d.Checks, Timeout: 2 * time.Second, Log: d.Log}
+	health := handler.Health{Checks: d.Checks, Optional: d.Optional, Timeout: 2 * time.Second, Log: d.Log}
 	mux.HandleFunc("GET /health", health.Live)
 	mux.HandleFunc("GET /ready", health.Ready)
 

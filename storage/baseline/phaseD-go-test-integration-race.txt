@@ -1,0 +1,15 @@
+ok  	github.com/redxtube/api/internal/auth	1.617s
+ok  	github.com/redxtube/api/internal/captions	1.009s
+ok  	github.com/redxtube/api/internal/config	1.011s
+ok  	github.com/redxtube/api/internal/handler	19.177s
+ok  	github.com/redxtube/api/internal/httpx	1.011s
+ok  	github.com/redxtube/api/internal/mail	1.068s
+ok  	github.com/redxtube/api/internal/media	1.008s
+ok  	github.com/redxtube/api/internal/metrics	1.009s
+ok  	github.com/redxtube/api/internal/pagination	1.007s
+ok  	github.com/redxtube/api/internal/playback	1.010s
+ok  	github.com/redxtube/api/internal/ratelimit	1.378s
+ok  	github.com/redxtube/api/internal/server	1.015s
+ok  	github.com/redxtube/api/internal/service	1.020s
+ok  	github.com/redxtube/api/internal/storage	1.925s
+ok  	github.com/redxtube/api/internal/ws	1.819s

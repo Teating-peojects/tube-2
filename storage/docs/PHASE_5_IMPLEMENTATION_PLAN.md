@@ -26,7 +26,7 @@ that must change in `backend/` or `web/` (they must compile into those modules).
 - Edits outside storage/: `db/migrations`, `backend/internal/{handler,service,repository}/upload*.go`, `docs/api-contract.md`.
 - Tests: retry limit, wrong owner, wrong state, duplicate call, concurrent calls.
 
-## Phase D — Cleanup and reliability
+## Phase D — Cleanup and reliability  (status: DONE, see PROGRESS.md and PHASE_5_CLEANUP.md)
 - Janitor extension: sweep orphan objects/multiparts with no live session, cancelled/failed objects past a
   configurable retention; idempotent, retryable, structured logs; never touches objects of COMPLETED/published videos.
 - Storage connectivity check exposed without making `/ready` depend on it (optional dependency).

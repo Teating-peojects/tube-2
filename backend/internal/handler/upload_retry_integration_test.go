@@ -2,9 +2,11 @@ package handler_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +39,9 @@ type retryStore struct {
 	mu          sync.Mutex
 	created     int
 	aborted     []string // provider upload ids
+	prefixes    []string // DeletePrefix calls that succeeded
+	failAbort   bool
+	failVideo   string // DeletePrefix fails for prefixes containing this video id
 }
 
 func (s *retryStore) CreateMultipart(context.Context, string, string) (string, error) {
@@ -48,8 +53,20 @@ func (s *retryStore) CreateMultipart(context.Context, string, string) (string, e
 func (s *retryStore) AbortMultipart(_ context.Context, _, providerID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failAbort {
+		return errors.New("s3 down")
+	}
 	s.aborted = append(s.aborted, providerID)
 	return nil
+}
+func (s *retryStore) DeletePrefix(_ context.Context, prefix string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failVideo != "" && strings.Contains(prefix, s.failVideo) {
+		return 0, errors.New("s3 down")
+	}
+	s.prefixes = append(s.prefixes, prefix)
+	return 1, nil
 }
 func (s *retryStore) PresignUploadPart(key, id string, n int, _ time.Duration) string {
 	return fmt.Sprintf("https://s3.test/%s?upload=%s&part=%d", key, id, n)

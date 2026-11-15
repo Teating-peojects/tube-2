@@ -42,6 +42,9 @@ type UploadConfig struct {
 	MaxOpen    int           // UPLOAD_MAX_OPEN, unfinished uploads per user, 1..50
 	SessionTTL time.Duration // UPLOAD_SESSION_TTL, 1h..168h
 	MaxRetries int           // UPLOAD_MAX_RETRIES, reopenings of one expired upload, 0..10 (0 disables retry)
+
+	ExpiredRetention time.Duration // UPLOAD_EXPIRED_RETENTION, how long an expired upload stays retryable, 1h..2160h
+	CleanupDelay     time.Duration // UPLOAD_CLEANUP_DELAY, how long a closed session waits before the sweeper frees its storage, 1m..24h
 }
 
 // Enabled reports whether uploads are configured.
@@ -312,7 +315,8 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	// ----- upload limits -----
-	up := UploadConfig{MaxBytes: 5 << 30, PartSize: 16 << 20, MaxOpen: 5, SessionTTL: 24 * time.Hour, MaxRetries: 3}
+	up := UploadConfig{MaxBytes: 5 << 30, PartSize: 16 << 20, MaxOpen: 5, SessionTTL: 24 * time.Hour, MaxRetries: 3,
+		ExpiredRetention: 7 * 24 * time.Hour, CleanupDelay: 10 * time.Minute}
 	int64Env := func(name string, dst *int64, lo, hi int64) {
 		v := get(name, "")
 		if v == "" {
@@ -351,6 +355,20 @@ func Load(getenv func(string) string) (Config, error) {
 			up.SessionTTL = d
 		}
 	}
+	durationEnv := func(name string, dst *time.Duration, lo, hi time.Duration) {
+		v := get(name, "")
+		if v == "" {
+			return
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil || d < lo || d > hi {
+			fail("%s must be a duration between %s and %s, e.g. 24h (got %q)", name, lo, hi, v)
+			return
+		}
+		*dst = d
+	}
+	durationEnv("UPLOAD_EXPIRED_RETENTION", &up.ExpiredRetention, time.Hour, 2160*time.Hour)
+	durationEnv("UPLOAD_CLEANUP_DELAY", &up.CleanupDelay, time.Minute, 24*time.Hour)
 	// With the bounds above a file needs at most 5 GiB / 5 MiB = 1,024 parts, far below S3's 10,000-part limit.
 	c.Upload = up
 

@@ -22,7 +22,7 @@ Contracts and design:
 cd backend
 cp .env.example .env          # set the passwords and AUTH_SECRET (openssl rand -base64 48)
 docker compose up --build     # postgres -> roles -> migrations (as redxtube_migrator) -> categories -> api
-curl localhost:8080/ready     # {"checks":{"postgres":"ok","redis":"ok"},"status":"ok"}
+curl localhost:8080/ready     # {"checks":{"postgres":"ok","redis":"ok"},"status":"ok"}  (+ "storage" when STORAGE_* is set; a storage outage adds "degraded":["storage"] but stays 200)
 ```
 Compose lives in `backend/` and uses the `redxtube` project name; it mounts `../db/*` read-only.
 

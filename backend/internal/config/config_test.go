@@ -297,3 +297,40 @@ func TestUploadLimitsRejectBadValues(t *testing.T) {
 		t.Errorf("UPLOAD_MAX_RETRIES=0 must be accepted and kept: %v %+v", err, c.Upload)
 	}
 }
+
+func TestUploadCleanupSettings(t *testing.T) {
+	c, err := Load(env(devBase()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Upload.ExpiredRetention != 7*24*time.Hour || c.Upload.CleanupDelay != 10*time.Minute {
+		t.Fatalf("defaults changed: %+v", c.Upload)
+	}
+	m := devBase()
+	m["UPLOAD_EXPIRED_RETENTION"], m["UPLOAD_CLEANUP_DELAY"] = "72h", "2m"
+	if c, err = Load(env(m)); err != nil || c.Upload.ExpiredRetention != 72*time.Hour || c.Upload.CleanupDelay != 2*time.Minute {
+		t.Fatalf("overrides: %v %+v", err, c.Upload)
+	}
+	bad := map[string][]string{
+		"UPLOAD_EXPIRED_RETENTION": {"30m", "2161h", "forever", "0"},
+		"UPLOAD_CLEANUP_DELAY":     {"30s", "25h", "soon", "0"},
+	}
+	for name, values := range bad {
+		for _, v := range values {
+			m := devBase()
+			m[name] = v
+			if _, err := Load(env(m)); err == nil || !strings.Contains(err.Error(), name) {
+				t.Errorf("%s=%q should be rejected naming the variable, got %v", name, v, err)
+			}
+		}
+	}
+	m = devBase()
+	m["UPLOAD_EXPIRED_RETENTION"], m["UPLOAD_CLEANUP_DELAY"] = "1h", "1m"
+	if _, err := Load(env(m)); err != nil {
+		t.Errorf("lower bounds rejected: %v", err)
+	}
+	m["UPLOAD_EXPIRED_RETENTION"], m["UPLOAD_CLEANUP_DELAY"] = "2160h", "24h"
+	if _, err := Load(env(m)); err != nil {
+		t.Errorf("upper bounds rejected: %v", err)
+	}
+}

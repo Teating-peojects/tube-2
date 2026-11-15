@@ -47,6 +47,21 @@ var (
 // MaxUploadRetries is how often one expired upload may be reopened (see Retry).
 const MaxUploadRetries = 3
 
+const (
+	// ExpiredRetention is how long an expired upload stays retryable; afterwards it is final and its storage is deleted.
+	ExpiredRetention = 7 * 24 * time.Hour
+	// CleanupDelay is how long a closed session waits before the sweeper frees its storage (the immediate paths
+	// have already tried by then).
+	CleanupDelay = 10 * time.Minute
+)
+
+// Counter receives the upload counters (internal/metrics.Counters implements it). The default discards them.
+type Counter interface{ Add(name string, n int64) }
+
+type noopCounter struct{}
+
+func (noopCounter) Add(string, int64) {}
+
 // UploadLimits are the tunable upload limits (UPLOAD_* environment variables, see config.UploadConfig).
 // DefaultUploadLimits equals the former hard-coded constants, so behaviour only changes when they are set.
 type UploadLimits struct {
@@ -55,10 +70,14 @@ type UploadLimits struct {
 	MaxOpen    int           // unfinished uploads one user may hold
 	SessionTTL time.Duration // how long an upload session stays open
 	MaxRetries int           // reopenings of one expired session; 0 disables retry
+
+	ExpiredRetention time.Duration // how long an expired upload stays retryable
+	CleanupDelay     time.Duration // age a closed session must reach before the sweeper frees its storage
 }
 
 func DefaultUploadLimits() UploadLimits {
-	return UploadLimits{MaxBytes: MaxUploadBytes, PartSize: UploadPartSize, MaxOpen: MaxOpenUploads, SessionTTL: UploadTTL, MaxRetries: MaxUploadRetries}
+	return UploadLimits{MaxBytes: MaxUploadBytes, PartSize: UploadPartSize, MaxOpen: MaxOpenUploads, SessionTTL: UploadTTL, MaxRetries: MaxUploadRetries,
+		ExpiredRetention: ExpiredRetention, CleanupDelay: CleanupDelay}
 }
 
 // presignPartTTL keeps presigned part URLs valid for half the session, always shorter than the session itself.
@@ -107,6 +126,10 @@ type UploadStore interface {
 	FinishComplete(ctx context.Context, s *repository.UploadSession, a repository.AuditEntry) error
 	DiscardUpload(ctx context.Context, s *repository.UploadSession, a *repository.AuditEntry) error
 	ExpireUploads(ctx context.Context, limit int) ([]repository.ExpiredUpload, error)
+	ClosedUploads(ctx context.Context, delay time.Duration, limit int) ([]repository.ClosedUpload, error)
+	MarkCleaned(ctx context.Context, c repository.ClosedUpload) (bool, error)
+	CleanupFailed(ctx context.Context, c repository.ClosedUpload) (int, error)
+	FinalizeExpired(ctx context.Context, retention time.Duration, limit int) (int, error)
 	ReviveUpload(ctx context.Context, s *repository.UploadSession, providerUploadID string, expiresAt time.Time, maxRetries int, a repository.AuditEntry) (bool, error)
 	Progress(ctx context.Context, videoID string) (repository.Progress, error)
 	GeneratedThumbs(ctx context.Context, videoID string) ([]repository.ThumbRow, error)
@@ -137,10 +160,19 @@ type Upload struct {
 	log     *slog.Logger
 	now     func() time.Time
 	limits  UploadLimits
+	ctr     Counter
 }
 
 func NewUpload(repo UploadStore, store storage.API, limiter Limiter, ipKey []byte, urls media.URLs, notify Notifier, log *slog.Logger) *Upload {
-	return &Upload{repo: repo, store: store, limiter: limiter, ipKey: ipKey, urls: urls, notify: notify, log: log, now: time.Now, limits: DefaultUploadLimits()}
+	return &Upload{repo: repo, store: store, limiter: limiter, ipKey: ipKey, urls: urls, notify: notify, log: log, now: time.Now, limits: DefaultUploadLimits(), ctr: noopCounter{}}
+}
+
+// WithMetrics sets where the upload counters go.
+func (s *Upload) WithMetrics(c Counter) *Upload {
+	if c != nil {
+		s.ctr = c
+	}
+	return s
 }
 
 // WithLimits replaces the default limits. The caller (config.Load) has already validated them.
@@ -264,6 +296,7 @@ func (s *Upload) Init(ctx context.Context, p *auth.Principal, ci ClientInfo, in 
 		return model.UploadInit{}, apperr.Internal(err)
 	}
 
+	s.ctr.Add("upload_init", 1)
 	return model.UploadInit{UploadID: uploadID, VideoID: videoID, PartSize: s.limits.PartSize, Parts: s.presignParts(key, providerID, int(partCount))}, nil
 }
 
@@ -298,6 +331,9 @@ func (s *Upload) Retry(ctx context.Context, p *auth.Principal, ci ClientInfo, up
 	if int(u.RetryCount) >= s.limits.MaxRetries {
 		return model.UploadInit{}, apperr.Conflict("retry_limit", "This upload was retried too many times, start a new one")
 	}
+	if !s.retryWindowOpen(u) {
+		return model.UploadInit{}, apperr.Conflict("not_retryable", "This upload expired too long ago, start a new one")
+	}
 	if err := s.limit(ctx, "upload:retry:"+p.UserID, 20, time.Hour); err != nil {
 		return model.UploadInit{}, err
 	}
@@ -324,6 +360,7 @@ func (s *Upload) Retry(ctx context.Context, p *auth.Principal, ci ClientInfo, up
 		}
 		return model.UploadInit{}, apperr.Conflict("not_retryable", "This upload can't be retried right now")
 	}
+	s.ctr.Add("upload_retry", 1)
 	return model.UploadInit{UploadID: u.ID, VideoID: u.VideoID, PartSize: int64(u.PartSize), Parts: s.presignParts(u.StorageKey, providerID, int(u.PartCount))}, nil
 }
 
@@ -396,10 +433,12 @@ func (s *Upload) Complete(ctx context.Context, p *auth.Principal, ci ClientInfo,
 	}
 	bg := context.WithoutCancel(ctx) // finish cleanly even if the client disconnects
 	retryable := func(e error) error {
+		s.ctr.Add("upload_complete_retryable_failure", 1)
 		_ = s.repo.RevertComplete(bg, u.ID)
 		return e
 	}
 	reject := func(code, msg string) error {
+		s.ctr.Add("upload_rejected_"+code, 1)
 		_ = s.store.Delete(bg, u.StorageKey)
 		_ = s.repo.DiscardUpload(bg, u, ptrAudit(s.auditEntry(p, ci, "upload.rejected", "video", u.VideoID, map[string]any{"reason": code})))
 		return apperr.New(http.StatusUnprocessableEntity, code, msg)
@@ -455,6 +494,7 @@ func (s *Upload) Complete(ctx context.Context, p *auth.Principal, ci ClientInfo,
 	if err := s.repo.FinishComplete(bg, u, s.auditEntry(p, ci, "upload.complete", "video", u.VideoID, map[string]any{"size": u.DeclaredSize})); err != nil {
 		return apperr.Internal(err)
 	}
+	s.ctr.Add("upload_complete", 1)
 	return nil
 }
 
@@ -491,6 +531,7 @@ func (s *Upload) Abort(ctx context.Context, p *auth.Principal, ci ClientInfo, up
 	if err := s.repo.DiscardUpload(bg, u, ptrAudit(s.auditEntry(p, ci, "upload.abort", "video", u.VideoID, nil))); err != nil {
 		return apperr.Internal(err)
 	}
+	s.ctr.Add("upload_aborted", 1)
 	return nil
 }
 
@@ -513,7 +554,7 @@ func (s *Upload) Status(ctx context.Context, p *auth.Principal, uploadID string)
 		return out, nil
 	}
 	if u.Status == "ABORTED" || u.Status == "EXPIRED" || u.VideoDeleted {
-		if u.Status == "EXPIRED" && int(u.RetryCount) < s.limits.MaxRetries {
+		if u.Status == "EXPIRED" && int(u.RetryCount) < s.limits.MaxRetries && s.retryWindowOpen(u) {
 			msg := "This upload expired before it finished. You can retry it."
 			out.Status, out.Progress, out.Error, out.Retryable = "failed", 0, &msg, true
 			return out, nil
@@ -972,6 +1013,100 @@ func (s *Upload) Publish(ctx context.Context, p *auth.Principal, ci ClientInfo, 
 
 // ---------- janitor ----------
 
+// retryWindowOpen reports whether an expired upload may still be reopened: its deadline passed less than
+// limits.ExpiredRetention ago. After that the janitor finalizes it (see SweepStorage).
+func (s *Upload) retryWindowOpen(u *repository.UploadSession) bool {
+	return s.now().Before(u.ExpiresAt.Add(s.limits.ExpiredRetention))
+}
+
+// SweepResult counts what one SweepStorage pass did.
+type SweepResult struct{ Finalized, Cleaned, Failed int }
+
+// SweepStorage is the janitor's safety net for object storage. The immediate paths (abort, reject, expiry) free
+// storage on a best-effort basis; whatever they missed is found here from the database:
+//
+//   - expired sessions past their retry window become final (ABORTED);
+//   - every EXPIRED/ABORTED session older than limits.CleanupDelay gets its multipart upload aborted, and an
+//     ABORTED one additionally loses its objects (original, thumbnails, captions). EXPIRED sessions keep their
+//     key because a retry reuses it; only the multipart upload they held is freed.
+//
+// Everything is idempotent (a missing object or multipart is success). A failure is counted and retried with a
+// growing delay, so one bad row cannot starve the others. A video that is PUBLISHED is never touched.
+func (s *Upload) SweepStorage(ctx context.Context) (SweepResult, error) {
+	var res SweepResult
+	if s.store == nil {
+		return res, nil // without storage nothing can be verified, so nothing is marked as cleaned
+	}
+	n, err := s.repo.FinalizeExpired(ctx, s.limits.ExpiredRetention, janitorBatch)
+	if err != nil {
+		return res, err
+	}
+	res.Finalized = n
+	s.ctr.Add("upload_expired_finalized", int64(n))
+
+	rows, err := s.repo.ClosedUploads(ctx, s.limits.CleanupDelay, janitorBatch)
+	if err != nil {
+		return res, err
+	}
+	for _, c := range rows {
+		if ctx.Err() != nil {
+			break
+		}
+		deleted, ferr := s.freeStorage(ctx, c)
+		if ferr != nil {
+			res.Failed++
+			s.ctr.Add("cleanup_failed", 1)
+			attempts, cerr := s.repo.CleanupFailed(ctx, c)
+			if cerr != nil {
+				s.log.ErrorContext(ctx, "recording a cleanup failure failed", "upload", c.ID, "err", cerr.Error())
+			}
+			lvl := slog.LevelWarn
+			if attempts >= 5 {
+				lvl = slog.LevelError // someone should look at this one
+			}
+			s.log.Log(ctx, lvl, "freeing upload storage failed", "upload", c.ID, "video", c.VideoID, "attempts", attempts, "err", ferr.Error())
+			continue
+		}
+		s.ctr.Add("cleanup_objects_deleted", int64(deleted))
+		if ok, err := s.repo.MarkCleaned(ctx, c); err != nil {
+			s.log.ErrorContext(ctx, "marking upload storage as cleaned failed", "upload", c.ID, "err", err.Error())
+		} else if ok {
+			res.Cleaned++
+			s.ctr.Add("cleanup_sessions", 1)
+		}
+	}
+	return res, nil
+}
+
+// freeStorage releases the storage of one closed session and returns how many objects it deleted.
+func (s *Upload) freeStorage(ctx context.Context, c repository.ClosedUpload) (int, error) {
+	if c.ProviderUploadID != "" {
+		if err := s.store.AbortMultipart(ctx, c.StorageKey, c.ProviderUploadID); err != nil {
+			return 0, err
+		}
+	}
+	if c.Status != "ABORTED" {
+		return 0, nil
+	}
+	if c.VideoStatus == "PUBLISHED" {
+		s.log.ErrorContext(ctx, "refusing to delete the storage of a published video", "upload", c.ID, "video", c.VideoID)
+		s.ctr.Add("cleanup_skipped_published", 1)
+		return 0, nil
+	}
+	if !IsUUID(c.VideoID) {
+		return 0, errors.New("unexpected video id " + c.VideoID)
+	}
+	total := 0
+	for _, dir := range []string{"uploads/", "thumbs/", "captions/"} {
+		n, err := s.store.DeletePrefix(ctx, dir+c.VideoID+"/")
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
 // ExpireStale closes upload sessions past their deadline and frees their storage.
 // It is safe to run on every API instance (the database hands each row to one).
 func (s *Upload) ExpireStale(ctx context.Context) (int, error) {
@@ -979,6 +1114,7 @@ func (s *Upload) ExpireStale(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	s.ctr.Add("upload_expired", int64(len(exp)))
 	if s.store == nil {
 		return len(exp), nil
 	}

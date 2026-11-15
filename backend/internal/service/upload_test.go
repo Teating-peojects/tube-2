@@ -41,6 +41,11 @@ type fakeStorage struct {
 	head      []byte
 	created   int   // CreateMultipart calls
 	createErr error // makes CreateMultipart fail
+
+	abortedIDs   []string // provider upload ids passed to AbortMultipart
+	abortFailKey string   // AbortMultipart fails for this key
+	prefixes     []string // DeletePrefix calls
+	prefixErr    error    // DeletePrefix fails
 }
 
 func (f *fakeStorage) CreateMultipart(context.Context, string, string) (string, error) {
@@ -60,8 +65,12 @@ func (f *fakeStorage) CompleteMultipart(context.Context, string, string, []stora
 	f.completed = true
 	return nil
 }
-func (f *fakeStorage) AbortMultipart(_ context.Context, key, _ string) error {
+func (f *fakeStorage) AbortMultipart(_ context.Context, key, id string) error {
+	if key == f.abortFailKey {
+		return errors.New("s3 down")
+	}
 	f.aborted = append(f.aborted, key)
+	f.abortedIDs = append(f.abortedIDs, id)
 	return nil
 }
 func (f *fakeStorage) PresignPut(key, _ string, _ int64, _ time.Duration) string {
@@ -110,7 +119,13 @@ func (f *fakeStorage) Delete(_ context.Context, key string) error {
 	delete(f.objects, key)
 	return nil
 }
-func (f *fakeStorage) DeletePrefix(context.Context, string) (int, error) { return 0, nil }
+func (f *fakeStorage) DeletePrefix(_ context.Context, prefix string) (int, error) {
+	if f.prefixErr != nil {
+		return 0, f.prefixErr
+	}
+	f.prefixes = append(f.prefixes, prefix)
+	return 1, nil
+}
 
 type fakeUploads struct {
 	sess      *repository.UploadSession
@@ -131,6 +146,15 @@ type fakeUploads struct {
 	revived    revive
 	reviveLost bool // another caller won the race / budget spent
 	reviveErr  error
+
+	closed         []repository.ClosedUpload
+	closedDelay    time.Duration
+	marked         []string
+	failed         []string
+	failedAttempts int
+	finalize       int
+	finalizeCalls  int
+	finalizeKeep   time.Duration
 }
 
 type revive struct {
@@ -163,6 +187,23 @@ func (f *fakeUploads) FinishComplete(context.Context, *repository.UploadSession,
 func (f *fakeUploads) DiscardUpload(context.Context, *repository.UploadSession, *repository.AuditEntry) error {
 	f.discarded = true
 	return nil
+}
+func (f *fakeUploads) ClosedUploads(_ context.Context, delay time.Duration, _ int) ([]repository.ClosedUpload, error) {
+	f.closedDelay = delay
+	return f.closed, nil
+}
+func (f *fakeUploads) MarkCleaned(_ context.Context, c repository.ClosedUpload) (bool, error) {
+	f.marked = append(f.marked, c.ID)
+	return true, nil
+}
+func (f *fakeUploads) CleanupFailed(_ context.Context, c repository.ClosedUpload) (int, error) {
+	f.failed = append(f.failed, c.ID)
+	return f.failedAttempts, nil
+}
+func (f *fakeUploads) FinalizeExpired(_ context.Context, keep time.Duration, _ int) (int, error) {
+	f.finalizeCalls++
+	f.finalizeKeep = keep
+	return f.finalize, nil
 }
 func (f *fakeUploads) ReviveUpload(_ context.Context, _ *repository.UploadSession, provider string, expires time.Time, max int, a repository.AuditEntry) (bool, error) {
 	f.revives++
@@ -402,6 +443,180 @@ func TestStatusMarksExpiredUploadsRetryable(t *testing.T) {
 	}
 }
 
+type testCounter struct {
+	mu sync.Mutex
+	m  map[string]int64
+}
+
+func (c *testCounter) Add(name string, n int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = map[string]int64{}
+	}
+	c.m[name] += n
+}
+func (c *testCounter) get(name string) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.m[name]
+}
+
+func closedRow(id, status, videoStatus string) repository.ClosedUpload {
+	return repository.ClosedUpload{ID: id, VideoID: vidID, StorageKey: "uploads/" + vidID + "/" + id + ".mp4", ProviderUploadID: "prov-" + id, Status: status, VideoStatus: videoStatus}
+}
+
+func TestSweepFreesAbortedStorage(t *testing.T) {
+	ctr := &testCounter{}
+	db, st := &fakeUploads{closed: []repository.ClosedUpload{closedRow("a", "ABORTED", "FAILED")}}, &fakeStorage{}
+	svc, _ := newUploadSvc(db, st)
+	svc.WithMetrics(ctr)
+	res, err := svc.SweepStorage(context.Background())
+	if err != nil || res.Cleaned != 1 || res.Failed != 0 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if len(st.abortedIDs) != 1 || st.abortedIDs[0] != "prov-a" {
+		t.Errorf("the multipart upload must be aborted by its provider id: %v", st.abortedIDs)
+	}
+	want := []string{"uploads/" + vidID + "/", "thumbs/" + vidID + "/", "captions/" + vidID + "/"}
+	if strings.Join(st.prefixes, ",") != strings.Join(want, ",") {
+		t.Errorf("deleted prefixes %v, want %v", st.prefixes, want)
+	}
+	if len(db.marked) != 1 || db.marked[0] != "a" || len(db.failed) != 0 {
+		t.Errorf("marked=%v failed=%v", db.marked, db.failed)
+	}
+	if ctr.get("cleanup_sessions") != 1 || ctr.get("cleanup_objects_deleted") != 3 {
+		t.Errorf("counters: %v", ctr.m)
+	}
+}
+
+func TestSweepKeepsTheKeyOfAnExpiredUpload(t *testing.T) {
+	// A retry reuses the storage key, so an EXPIRED session only loses its multipart upload.
+	db, st := &fakeUploads{closed: []repository.ClosedUpload{closedRow("e", "EXPIRED", "FAILED")}}, &fakeStorage{}
+	svc, _ := newUploadSvc(db, st)
+	res, _ := svc.SweepStorage(context.Background())
+	if res.Cleaned != 1 || len(st.abortedIDs) != 1 || len(st.prefixes) != 0 {
+		t.Errorf("cleaned=%d aborted=%v prefixes=%v: nothing but the multipart may be touched", res.Cleaned, st.abortedIDs, st.prefixes)
+	}
+}
+
+func TestSweepFailureIsRecordedAndDoesNotStarveOthers(t *testing.T) {
+	bad, good := closedRow("bad", "ABORTED", "FAILED"), closedRow("good", "ABORTED", "FAILED")
+	db := &fakeUploads{closed: []repository.ClosedUpload{bad, good}, failedAttempts: 2}
+	st := &fakeStorage{abortFailKey: bad.StorageKey}
+	ctr := &testCounter{}
+	svc, _ := newUploadSvc(db, st)
+	svc.WithMetrics(ctr)
+	res, err := svc.SweepStorage(context.Background())
+	if err != nil || res.Failed != 1 || res.Cleaned != 1 {
+		t.Fatalf("%+v %v: one failure must not stop the pass", res, err)
+	}
+	if len(db.failed) != 1 || db.failed[0] != "bad" || len(db.marked) != 1 || db.marked[0] != "good" {
+		t.Errorf("failed=%v marked=%v", db.failed, db.marked)
+	}
+	if ctr.get("cleanup_failed") != 1 {
+		t.Errorf("counters: %v", ctr.m)
+	}
+	// deleting objects can fail too: the session must stay unmarked
+	db = &fakeUploads{closed: []repository.ClosedUpload{bad}}
+	svc, _ = newUploadSvc(db, &fakeStorage{prefixErr: errors.New("s3 down")})
+	if res, _ = svc.SweepStorage(context.Background()); res.Failed != 1 || len(db.marked) != 0 || len(db.failed) != 1 {
+		t.Errorf("delete failure: %+v marked=%v failed=%v", res, db.marked, db.failed)
+	}
+}
+
+func TestSweepNeverDeletesAPublishedVideo(t *testing.T) {
+	ctr := &testCounter{}
+	db, st := &fakeUploads{closed: []repository.ClosedUpload{closedRow("p", "ABORTED", "PUBLISHED")}}, &fakeStorage{}
+	svc, _ := newUploadSvc(db, st)
+	svc.WithMetrics(ctr)
+	res, _ := svc.SweepStorage(context.Background())
+	if len(st.prefixes) != 0 || res.Cleaned != 1 || ctr.get("cleanup_skipped_published") != 1 {
+		t.Errorf("prefixes=%v cleaned=%d counters=%v", st.prefixes, res.Cleaned, ctr.m)
+	}
+	// a malformed video id must never be turned into a delete prefix
+	badID := closedRow("x", "ABORTED", "FAILED")
+	badID.VideoID = "../../uploads"
+	db, st = &fakeUploads{closed: []repository.ClosedUpload{badID}}, &fakeStorage{}
+	svc, _ = newUploadSvc(db, st)
+	if res, _ = svc.SweepStorage(context.Background()); len(st.prefixes) != 0 || res.Failed != 1 {
+		t.Errorf("malformed id: prefixes=%v %+v", st.prefixes, res)
+	}
+}
+
+func TestSweepUsesTheConfiguredTimes(t *testing.T) {
+	db := &fakeUploads{finalize: 4}
+	svc, _ := newUploadSvc(db, &fakeStorage{})
+	l := DefaultUploadLimits()
+	l.ExpiredRetention, l.CleanupDelay = 48*time.Hour, 3*time.Minute
+	svc.WithLimits(l)
+	res, err := svc.SweepStorage(context.Background())
+	if err != nil || res.Finalized != 4 || db.finalizeKeep != 48*time.Hour || db.closedDelay != 3*time.Minute {
+		t.Errorf("%+v %v keep=%v delay=%v", res, err, db.finalizeKeep, db.closedDelay)
+	}
+	// without object storage nothing can be verified: no database work, nothing marked
+	db = &fakeUploads{finalize: 4, closed: []repository.ClosedUpload{closedRow("a", "ABORTED", "FAILED")}}
+	off, _ := newUploadSvc(db, nil)
+	if res, err = off.SweepStorage(context.Background()); err != nil || res != (SweepResult{}) || db.finalizeCalls != 0 || len(db.marked) != 0 {
+		t.Errorf("uploads off: %+v %v calls=%d marked=%v", res, err, db.finalizeCalls, db.marked)
+	}
+}
+
+func TestRetryWindow(t *testing.T) {
+	now := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	for name, c := range map[string]struct {
+		deadlineAgo time.Duration
+		open        bool
+	}{"just expired": {time.Hour, true}, "six days ago": {6 * 24 * time.Hour, true}, "eight days ago": {8 * 24 * time.Hour, false}} {
+		s := expired(0)
+		s.ExpiresAt = now.Add(-c.deadlineAgo)
+		db := &fakeUploads{sess: s}
+		svc, _ := newUploadSvc(db, &fakeStorage{})
+		svc.now = func() time.Time { return now }
+		st, err := svc.Status(context.Background(), testUser, upID)
+		if err != nil || st.Retryable != c.open {
+			t.Errorf("%s: status retryable=%v err=%v, want %v", name, st.Retryable, err, c.open)
+		}
+		_, err = svc.Retry(context.Background(), testUser, testCI, upID)
+		if c.open && err != nil || !c.open && (ecode(t, err) != "not_retryable" || db.revives != 0) {
+			t.Errorf("%s: retry err=%v revives=%d", name, err, db.revives)
+		}
+	}
+}
+
+func TestCountersFollowTheUploadLifecycle(t *testing.T) {
+	ctr := &testCounter{}
+	new := func(db *fakeUploads, st *fakeStorage) *Upload {
+		svc, _ := newUploadSvc(db, st)
+		return svc.WithMetrics(ctr)
+	}
+	ctx := context.Background()
+	if _, err := new(&fakeUploads{}, &fakeStorage{}).Init(ctx, testUser, testCI, InitInput{Filename: "a.mp4", Size: 10}); err != nil {
+		t.Fatal(err)
+	}
+	size := int64(UploadPartSize + 100)
+	have, in := goodParts(size)
+	if err := new(&fakeUploads{sess: session("INITIATED", size)}, &fakeStorage{parts: have, size: size, head: mp4Head()}).Complete(ctx, testUser, testCI, upID, in); err != nil {
+		t.Fatal(err)
+	}
+	new(&fakeUploads{sess: session("INITIATED", 100)}, &fakeStorage{parts: func() []storage.Part { p, _ := goodParts(100); return p }(), size: 100, head: []byte("<html>no</html>")}).
+		Complete(ctx, testUser, testCI, upID, func() []PartIn { _, i := goodParts(100); return i }())
+	if err := new(&fakeUploads{sess: session("INITIATED", 100)}, &fakeStorage{}).Abort(ctx, testUser, testCI, upID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := new(&fakeUploads{sess: expired(0)}, &fakeStorage{}).Retry(ctx, testUser, testCI, upID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := new(&fakeUploads{}, &fakeStorage{}).ExpireStale(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]int64{"upload_init": 1, "upload_complete": 1, "upload_rejected_invalid_file": 1, "upload_aborted": 1, "upload_retry": 1, "upload_expired": 1} {
+		if got := ctr.get(name); got != want {
+			t.Errorf("%s = %d, want %d (all: %v)", name, got, want, ctr.m)
+		}
+	}
+}
+
 func TestInitAcceptsAllowedFormats(t *testing.T) {
 	for ext, want := range map[string]string{".mp4": "video/mp4", ".m4v": "video/x-m4v", ".MOV": "video/quicktime", ".mkv": "video/x-matroska", ".webm": "video/webm"} {
 		db := &fakeUploads{}
@@ -416,6 +631,9 @@ func TestInitAcceptsAllowedFormats(t *testing.T) {
 
 func TestDefaultUploadLimitsMatchConstants(t *testing.T) {
 	d := DefaultUploadLimits()
+	if d.ExpiredRetention != ExpiredRetention || d.CleanupDelay != CleanupDelay {
+		t.Fatalf("cleanup defaults drifted: %+v", d)
+	}
 	if d.MaxBytes != MaxUploadBytes || d.PartSize != UploadPartSize || d.MaxOpen != MaxOpenUploads || d.SessionTTL != UploadTTL || d.MaxRetries != MaxUploadRetries {
 		t.Fatalf("defaults drifted from the constants: %+v", d)
 	}

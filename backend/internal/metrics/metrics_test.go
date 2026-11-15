@@ -81,3 +81,17 @@ func TestHTTPMiddlewareUsesBoundedLabels(t *testing.T) {
 		t.Error("ids or tokens leaked into labels")
 	}
 }
+
+func TestAddCountersBridgesTheInProcessCounters(t *testing.T) {
+	r := NewRegistry()
+	c := New()
+	c.Add("upload_completed", 3)
+	c.Add("cleanup_deleted", 1)
+	r.AddCounters("app_events_total", "events", c)
+	out := scrape(r)
+	for _, want := range []string{"# TYPE app_events_total counter", `app_events_total{event="cleanup_deleted"} 1`, `app_events_total{event="upload_completed"} 3`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}

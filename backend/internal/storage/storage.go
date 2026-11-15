@@ -352,6 +352,16 @@ func (c *Client) AbortMultipart(ctx context.Context, key, uploadID string) error
 	return nil
 }
 
+// Ping checks that the bucket is reachable with the configured credentials (HEAD bucket).
+func (c *Client) Ping(ctx context.Context) error {
+	resp, err := c.doBytes(ctx, http.MethodHead, "", nil, nil, nil)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // ---------- objects ----------
 
 func (c *Client) Head(ctx context.Context, key string) (ObjectInfo, error) {

@@ -142,6 +142,7 @@ func run() error {
 		ExpiredRetention: cfg.Upload.ExpiredRetention, CleanupDelay: cfg.Upload.CleanupDelay}).WithMetrics(counters)
 	notifRepo := repository.NewNotifications(pool)
 	notifSvc := service.NewNotifications(notifRepo, limiter, log)
+	processingSvc := service.NewProcessing(repository.NewProcessing(pool), limiter, ipKey, log)
 	adminSvc := service.NewAdmin(repository.NewAdmin(pool), limiter, ipKey, log)
 	studioSvc := service.NewStudio(repository.NewStudio(pool), limiter, ipKey, urls, log)
 	cookies := middleware.Cookies{Session: cfg.SessionCookieName, Age: "xh_age", AgeMark: "xh_age_ok", Domain: cfg.CookieDomain, Secure: cfg.CookieSecure}
@@ -173,15 +174,16 @@ func run() error {
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: server.New(server.Deps{
-			Cfg:     cfg,
-			Log:     log,
-			Auth:    &handler.Auth{Svc: authSvc, Cookies: cookies, TrustProxy: cfg.TrustProxyHeaders},
-			Authn:   middleware.Authenticate(authSvc, cookies),
-			Catalog: &handler.Catalog{Svc: catalogSvc},
-			Stream:  streamHandler,
-			Metrics: metricsMW,
-			Social:  &handler.Social{Svc: socialSvc, TrustProxy: cfg.TrustProxyHeaders},
-			Upload:  &handler.Upload{Svc: uploadSvc, TrustProxy: cfg.TrustProxyHeaders},
+			Cfg:        cfg,
+			Log:        log,
+			Auth:       &handler.Auth{Svc: authSvc, Cookies: cookies, TrustProxy: cfg.TrustProxyHeaders},
+			Authn:      middleware.Authenticate(authSvc, cookies),
+			Catalog:    &handler.Catalog{Svc: catalogSvc},
+			Stream:     streamHandler,
+			Processing: &handler.Processing{Svc: processingSvc, TrustProxy: cfg.TrustProxyHeaders},
+			Metrics:    metricsMW,
+			Social:     &handler.Social{Svc: socialSvc, TrustProxy: cfg.TrustProxyHeaders},
+			Upload:     &handler.Upload{Svc: uploadSvc, TrustProxy: cfg.TrustProxyHeaders},
 
 			Notifications: &handler.Notifications{Svc: notifSvc},
 			Studio:        &handler.Studio{Svc: studioSvc, TrustProxy: cfg.TrustProxyHeaders},

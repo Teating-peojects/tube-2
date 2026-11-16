@@ -35,6 +35,8 @@ type Deps struct {
 	Realtime      *handler.Realtime
 	// Admin serves moderation and administration (needs Auth); nil disables it.
 	Admin *handler.Admin
+	// Processing serves cancel/retry of video processing (Phase 6); nil disables it.
+	Processing *handler.Processing
 	// Stream serves signed HLS objects at /stream/{token}/{key...} (B7); nil disables it.
 	Stream http.Handler
 	// Metrics, when set, wraps every request (see internal/metrics).
@@ -75,6 +77,9 @@ func New(d Deps) http.Handler {
 	}
 	if d.Realtime != nil {
 		d.Realtime.Routes(mux)
+	}
+	if d.Processing != nil {
+		d.Processing.Routes(mux)
 	}
 	if d.Admin != nil {
 		d.Admin.Routes(mux)

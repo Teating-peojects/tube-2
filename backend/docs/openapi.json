@@ -758,6 +758,59 @@
         "x-handler": "setRole"
       }
     },
+    "/api/v1/admin/videos/{id}/processing/retry": {
+      "post": {
+        "description": "Not described in api-contract.md yet.",
+        "operationId": "postAdminVideosIdProcessingRetry",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [],
+        "summary": "POST /admin/videos/{id}/processing/retry",
+        "tags": [
+          "admin"
+        ],
+        "x-handler": "retry"
+      }
+    },
     "/api/v1/admin/videos/{id}/restore": {
       "post": {
         "description": "Auth: MODERATOR. `{reason}`; lifting a ban needs ADMIN",
@@ -3287,6 +3340,72 @@
           "studio"
         ],
         "x-handler": "setVisibility",
+        "x-requires": [
+          "verified email"
+        ]
+      }
+    },
+    "/api/v1/studio/videos/{id}/processing/cancel": {
+      "post": {
+        "description": "Not described in api-contract.md yet.",
+        "operationId": "postStudioVideosIdProcessingCancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "POST /studio/videos/{id}/processing/cancel",
+        "tags": [
+          "studio"
+        ],
+        "x-handler": "cancel",
         "x-requires": [
           "verified email"
         ]

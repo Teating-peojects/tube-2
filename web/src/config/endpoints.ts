@@ -61,7 +61,8 @@ export const endpoints = {
     init: "/api/v1/upload/init", // POST { filename, size, contentType } -> { uploadId, videoId, partSize, parts: [{ partNumber, url }] }
     complete: (id: string) => `/api/v1/upload/${e(id)}/complete`, // POST { parts: [{ partNumber, etag }] }
     abort: (id: string) => `/api/v1/upload/${e(id)}`, // DELETE
-    status: (id: string) => `/api/v1/upload/${e(id)}/status`, // GET -> { status, progress, thumbnails, error? }
+    retry: (id: string) => `/api/v1/upload/${e(id)}/retry`, // POST -> same body as init (same ids, fresh part URLs); only for an upload that expired
+    status: (id: string) => `/api/v1/upload/${e(id)}/status`, // GET -> { status, progress, thumbnails, error?, retryable? }
     assets: (id: string) => `/api/v1/upload/${e(id)}/assets`, // POST { kind: "thumbnail" | "caption", contentType, size, lang? } -> { assetId, url }
   },
   videoMetadata: (id: string) => `/api/v1/videos/${e(id)}/metadata`, // PATCH (save draft)

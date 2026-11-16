@@ -4,7 +4,7 @@ import { captionContentType } from "@/config/upload";
 import { xhrPut, type PartDone, type PutPart } from "@/lib/uploader";
 import type { ServerUploadStatus, UploadInit, UploadMeta } from "@/types";
 import { ApiError, api } from "./api";
-import { mockAsset, mockComplete, mockInit, mockPublish, mockPut, mockSaveDraft, mockStatus } from "./mock/studio";
+import { mockAsset, mockComplete, mockInit, mockPublish, mockPut, mockRetry, mockSaveDraft, mockStatus } from "./mock/studio";
 
 const send = (method: string, body?: unknown): RequestInit => ({ method, body: body === undefined ? undefined : JSON.stringify(body) });
 
@@ -14,6 +14,8 @@ export const initUpload = (v: { filename: string; size: number; contentType: str
   env.useMock ? mockInit(v) : api(endpoints.upload.init, send("POST", v));
 export const completeUpload = (id: string, parts: PartDone[]): Promise<void> =>
   env.useMock ? mockComplete(id) : api(endpoints.upload.complete(id), send("POST", { parts }));
+/** Reopens an upload that expired: same ids, a fresh multipart upload and new part URLs. 409 = not retryable. */
+export const retryUpload = (id: string): Promise<UploadInit> => (env.useMock ? mockRetry(id) : api(endpoints.upload.retry(id), send("POST")));
 export const abortUpload = (id: string): Promise<void> => (env.useMock ? Promise.resolve() : api(endpoints.upload.abort(id), send("DELETE")));
 export const getUploadStatus = (id: string): Promise<ServerUploadStatus> => (env.useMock ? mockStatus(id) : api(endpoints.upload.status(id)));
 

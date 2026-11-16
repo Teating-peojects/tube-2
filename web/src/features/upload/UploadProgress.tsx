@@ -1,4 +1,4 @@
-import { CheckCircle, WarningCircle } from "@phosphor-icons/react/dist/ssr";
+import { CheckCircle, WarningCircle, WifiSlash } from "@phosphor-icons/react/dist/ssr";
 import { Button } from "@/components/ui/Button";
 import type { Progress } from "@/lib/uploader";
 import type { UploadPhase } from "@/types";
@@ -10,9 +10,13 @@ const index: Partial<Record<UploadPhase, number>> = { preparing: 0, uploading: 1
 type Props = {
   phase: UploadPhase; progress: Progress; serverProgress: number; fileName: string; error: string | null;
   failedAtProcessing: boolean; onCancel: () => void; onRetry: () => void; onReset: () => void;
+  /** The browser is offline: the upload is paused and continues by itself. */
+  offline?: boolean;
+  /** False when retrying the same file cannot help (the server refused it): offer to choose another file instead. */
+  canRetry?: boolean;
 };
 
-export function UploadProgress({ phase, progress, serverProgress, fileName, error, failedAtProcessing, onCancel, onRetry, onReset }: Props) {
+export function UploadProgress({ phase, progress, serverProgress, fileName, error, failedAtProcessing, onCancel, onRetry, onReset, offline = false, canRetry = true }: Props) {
   const idx = index[phase] ?? -1;
   const uploading = phase === "uploading" || phase === "preparing";
   const pct = phase === "uploading" ? Math.floor((progress.loaded / Math.max(1, progress.total)) * 100)
@@ -26,7 +30,8 @@ export function UploadProgress({ phase, progress, serverProgress, fileName, erro
         <p className="truncate text-sm font-semibold" title={fileName}>{fileName}</p>
         <p className="mt-0.5 flex items-center gap-1.5 text-xs text-fg-2" role="status" aria-live="polite">
           {failed ? <><WarningCircle size={14} className="text-accent" aria-hidden="true" />{failedAtProcessing ? "Processing failed" : "Upload failed"}</>
-            : phase === "completed" ? <><CheckCircle size={14} weight="fill" aria-hidden="true" />Published</>
+            : offline && uploading ? <><WifiSlash size={14} aria-hidden="true" />Waiting for connection…</>
+              : phase === "completed" ? <><CheckCircle size={14} weight="fill" aria-hidden="true" />Published</>
               : phase === "ready" ? "Ready to publish"
                 : phase === "cancelled" ? "Cancelled" : steps[Math.max(0, idx)] + "…"}
         </p>
@@ -40,8 +45,11 @@ export function UploadProgress({ phase, progress, serverProgress, fileName, erro
         <span>{pct}%</span>
         {phase === "uploading" && <span>{formatBytes(progress.loaded)} / {formatBytes(progress.total)}</span>}
       </div>
-      {phase === "uploading" && (
+      {phase === "uploading" && !offline && (
         <p className="text-xs text-fg-3">{progress.speed > 0 ? `${formatBytes(progress.speed)}/s • ${formatEta(progress.eta)}` : "Starting…"}</p>
+      )}
+      {phase === "uploading" && offline && (
+        <p className="text-xs text-fg-2">You’re offline. The upload continues by itself when the connection is back; nothing is lost.</p>
       )}
 
       <ol className="grid grid-cols-3 gap-x-2 gap-y-1.5 text-[11px] sm:grid-cols-6 lg:grid-cols-2" aria-label="Steps">
@@ -55,9 +63,10 @@ export function UploadProgress({ phase, progress, serverProgress, fileName, erro
 
       {failed && error && <p role="alert" className="rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-sm">{error}</p>}
       <div className="flex flex-wrap gap-2">
-        {failed && !failedAtProcessing && <Button className="h-10" onClick={onRetry}>Retry upload</Button>}
-        {failed && failedAtProcessing && <Button className="h-10" onClick={onReset}>Upload again</Button>}
-        {(uploading || phase === "failed") && !failedAtProcessing && <Button variant="secondary" className="h-10" onClick={onCancel}>Cancel</Button>}
+        {failed && !failedAtProcessing && canRetry && <Button className="h-11" onClick={onRetry}>Retry upload</Button>}
+        {failed && !failedAtProcessing && !canRetry && <Button className="h-11" onClick={onReset}>Choose another file</Button>}
+        {failed && failedAtProcessing && <Button className="h-11" onClick={onReset}>Upload again</Button>}
+        {(uploading || (phase === "failed" && canRetry)) && !failedAtProcessing && <Button variant="secondary" className="h-11" onClick={onCancel}>Cancel</Button>}
       </div>
     </section>
   );

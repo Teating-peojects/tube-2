@@ -101,3 +101,12 @@ Phase 5 overall: still **PARTIALLY COMPLETE** (cleanup/metrics/health, frontend,
 | 9 DB design | VERIFIED | migration 000012 (reversible): 12 migrations, 39 tables, 82 indexes |
 | 14 integration tests (PostgreSQL) | PARTIAL | + cleanup flow at service + repository level; upload HTTP-level tests still open (Phase F) |
 Phase 5 overall: still **PARTIALLY COMPLETE** (frontend wiring, HTTP + MinIO integration tests, OpenAPI, metrics endpoint, lifecycle rule open).
+
+## 8. Status changes after Phase E (2026-11-14)
+| Row | Before | Now |
+|---|---|---|
+| 6 frontend: cancel, retry, speed/ETA, states | PARTIAL / NOT VERIFIED | VERIFIED at unit level (Vitest 105/105): cancel race fixed, retry wired to `POST /upload/:id/retry` with fallback, offline pause/resume, stall detection, per-code error messages, `beforeunload` |
+| 6 mobile layout | not checked | action buttons 44 px; stacked layout (progress above the form) already in place. **Not verified in a browser** (no Playwright here) |
+| 14 frontend tests | PARTIAL | 105 tests incl. a 20-test `useUpload` suite and fake-XHR tests |
+| 14 e2e | not run | still **NOT RUN** (no browsers in the sandbox); no e2e spec was added because it could not be verified and CI runs e2e |
+Phase 5 overall: still **PARTIALLY COMPLETE** (HTTP-level and MinIO integration tests, OpenAPI, e2e, metrics endpoint, lifecycle rule open).

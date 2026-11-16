@@ -7,7 +7,7 @@
 | C | Retry and state | **DONE** (backend, real PostgreSQL) — frontend wiring is Phase E | Go 213/213 with PostgreSQL 16 + Redis 7 + `-race`; migration 000011 up/down/up; dbcheck OK (11 migrations); mutation-checked (`baseline/phaseC-*`) |
 | D | Cleanup and reliability | **DONE** (code) — metrics have no scrape endpoint; real MinIO not verified | Go 226/226 with PostgreSQL 16 + Redis 7 + `-race`; migration 000012 up/down/up; dbcheck OK (12 migrations); mutation-checked (`baseline/phaseD-*`) |
 | E | Frontend | **DONE** (unit level) — e2e/real browser not run | Vitest 105/105 (+41), tsc and lint clean, mutation-checked (`baseline/phaseE-*`) |
-| F | Integration tests | Not started | — |
+| F | Integration tests | **DONE** (HTTP + emulators) — real MinIO and the new CI job NOT RUN | Go 244 pass + 8 S3 tests skipped without a server (run on s3rver/moto, see matrix), `-race`; 4 bugs found and fixed; mutation-checked (`baseline/phaseF-*`) |
 | G | OpenAPI, docs, report | Not started | — |
 
 Overall Phase 5: **PARTIALLY COMPLETE** (see `docs/PHASE_5_AUDIT.md`).
@@ -17,6 +17,19 @@ Overall Phase 5: **PARTIALLY COMPLETE** (see `docs/PHASE_5_AUDIT.md`).
   (existing behaviour, unchanged). Uploads still never auto-publish: publish needs READY + consent declaration.
 - `.avi` is dropped. Allowed formats: `.mp4 .m4v .mov .mkv .webm` (all have a magic-byte check: `ftyp` or EBML).
 - Per-request age gate on upload routes: not requested, not changed (age is verified at registration).
+
+## Phase F — what changed
+Details, matrix and the bug list: `docs/PHASE_5_TESTING.md`.
+- `handler/memstore_test.go` (S3-like in-memory store), `authtest_helpers_test.go` (`setupAuthFull` mounts the upload API), `upload_http_integration_test.go` and `upload_http_failures_integration_test.go`: 17 HTTP-level tests through the real router on PostgreSQL 16.
+- `internal/storage/s3_integration_test.go`: 8 tests against a real S3 server, skipped without `TEST_S3_ENDPOINT`.
+- **Fixes found by the tests:** `storage.AbortMultipart` (404 `NoSuchUpload` = done; the Phase D sweeper would have looped forever), `repository.DiscardUpload`/`qAbortSession` (cancelling a completed upload returned 500; its queued job stayed queued), `test-db.sh` stdout and exec bits (Phase A findings F1/F2).
+- `.github/workflows/backend.yml`: new job `s3` (MinIO via `docker run`, bucket via `curl --aws-sigv4`, `go test -run TestS3`). **Kept as a separate commit (`ci: add s3 job`)**: GitHub refuses to let a token change workflow files without the *Workflows* permission, so it is pushed once the token has it. **Never run on GitHub Actions.**
+- README: how to run the S3 tests.
+
+Behaviour notes / risks:
+- Cancelling a completed upload now closes its queued job; the B6 worker must still skip deleted videos for jobs already running.
+- The S3 tests were verified on emulators only; two of them (404 for parts of an aborted upload, 403 for a wrong secret) are unverified anywhere, and SigV4 correctness is not proven by an emulator that ignores signatures.
+- The `s3` job pins nothing (`minio/minio:latest`): pin a release once it has run.
 
 ## Phase E — what changed
 Details: `docs/PHASE_5_FRONTEND.md`. Only `web/` (and docs) changed; no backend change.

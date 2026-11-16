@@ -21,7 +21,8 @@ psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q -c "ALTER ROLE redxtube_app PASSWORD '$a
 # by any other role are invisible to redxtube_app ("permission denied for table users").
 host="${base#*@}"
 mig="postgres://redxtube_migrator:$mig_pw@$host/$DB"
-DATABASE_URL="$mig" "$ROOT/scripts/migrate.sh" up
+# stdout of this script is the list of exports (CI sources it), so everything else goes to stderr
+DATABASE_URL="$mig" bash "$ROOT/scripts/migrate.sh" up >&2
 psql "$mig" -v ON_ERROR_STOP=1 -q -f "$ROOT/seeds/reference_data.sql"
 
 echo "export TEST_ADMIN_DATABASE_URL='$base/$DB'"

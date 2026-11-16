@@ -83,8 +83,11 @@ WHERE id IN (SELECT i.id FROM upload_sessions i WHERE i.status = 'EXPIRED'
              AND i.expires_at < now() - make_interval(secs => $1::double precision)
              ORDER BY i.expires_at LIMIT $2::int FOR UPDATE SKIP LOCKED)`
 
-	qAbortSession = `UPDATE upload_sessions SET status = 'ABORTED', updated_at = now() WHERE id = $1::uuid AND status IN ('INITIATED', 'COMPLETING', 'COMPLETED')`
-	qDiscardVideo = `UPDATE videos SET status = 'FAILED', deleted_at = now(), updated_at = now() WHERE id = $1::uuid AND status <> 'PUBLISHED' AND deleted_at IS NULL`
+	// completed_at only exists on COMPLETED sessions (CHECK upload_sessions_completed), so cancelling one clears it.
+	qAbortSession = `UPDATE upload_sessions SET status = 'ABORTED', completed_at = NULL, updated_at = now() WHERE id = $1::uuid AND status IN ('INITIATED', 'COMPLETING', 'COMPLETED')`
+	// A completed upload that is cancelled before the worker picked it up must not be processed any more.
+	qCancelQueuedJobs = `UPDATE video_processing_jobs SET status = 'FAILED', error_message = 'upload cancelled', updated_at = now() WHERE video_id = $1::uuid AND status = 'QUEUED'`
+	qDiscardVideo     = `UPDATE videos SET status = 'FAILED', deleted_at = now(), updated_at = now() WHERE id = $1::uuid AND status <> 'PUBLISHED' AND deleted_at IS NULL`
 
 	qExpireUploads = `UPDATE upload_sessions s SET status = 'EXPIRED', updated_at = now()
 WHERE s.id IN (SELECT i.id FROM upload_sessions i WHERE i.status IN ('INITIATED', 'COMPLETING') AND i.expires_at < now()
@@ -244,6 +247,9 @@ func (r *Upload) DiscardUpload(ctx context.Context, s *UploadSession, a *AuditEn
 		return err
 	}
 	if _, err = tx.Exec(ctx, qDiscardVideo, s.VideoID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, qCancelQueuedJobs, s.VideoID); err != nil {
 		return err
 	}
 	if a != nil {

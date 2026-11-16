@@ -1,0 +1,31 @@
+S3 client integration tests (internal/storage/s3_integration_test.go), 2026-11-14
+Servers: s3rver 3.7.1 and moto 5.2.5 (independent S3 emulators). Real MinIO / AWS S3: NOT RUN (no Docker, no network access to them in the sandbox).
+
+## s3rver
+--- PASS: TestS3PingChecksTheBucket
+    s3_integration_test.go:117: ListParts: [] storage: 405 MethodNotAllowed: The specified method is not allowed against this resource.
+--- FAIL: TestS3MultipartLifecycle
+    s3_integration_test.go:166: completing with an ETag that does not match must fail
+--- FAIL: TestS3CompleteRefusesAWrongETag
+    s3_integration_test.go:183: first abort: storage: 405 MethodNotAllowed: The specified method is not allowed against this resource.
+--- FAIL: TestS3AbortIsIdempotent
+    s3_integration_test.go:207: storage: 405 MethodNotAllowed: The specified method is not allowed against this resource.
+--- FAIL: TestS3AbortedUploadRejectsParts
+--- PASS: TestS3ExpiredPresignedURLAnswers403
+    s3_integration_test.go:243: expected an HTTP answer from the server, got: <nil>
+--- FAIL: TestS3RejectsWrongCredentials
+--- PASS: TestS3ObjectsAndPrefixDeletion
+
+## moto
+--- PASS: TestS3PingChecksTheBucket
+--- PASS: TestS3MultipartLifecycle
+--- PASS: TestS3CompleteRefusesAWrongETag
+--- PASS: TestS3AbortIsIdempotent
+    s3_integration_test.go:210: a part URL of an aborted upload answered 500 (<!doctype html>
+--- FAIL: TestS3AbortedUploadRejectsParts
+    s3_integration_test.go:228: an expired presigned URL answered 200 (); the frontend expects 403
+--- FAIL: TestS3ExpiredPresignedURLAnswers403
+    s3_integration_test.go:243: expected an HTTP answer from the server, got: <nil>
+--- FAIL: TestS3RejectsWrongCredentials
+--- PASS: TestS3ObjectsAndPrefixDeletion
+

@@ -226,3 +226,26 @@ func TestPingChecksTheBucket(t *testing.T) {
 		}
 	}
 }
+
+func TestAbortMultipartTreatsAMissingUploadAsDone(t *testing.T) {
+	answer := func(status int, code string) func(http.ResponseWriter, *http.Request) {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>`+code+`</Code><Message>m</Message></Error>`)
+		}
+	}
+	// aborted or completed before: success, as the janitor, the sweeper and a cancel may all abort the same upload
+	for _, code := range []string{"NoSuchUpload", "NoSuchKey"} {
+		_, c := newFake(t, answer(http.StatusNotFound, code))
+		if err := c.AbortMultipart(context.Background(), "uploads/v/original.mp4", "id"); err != nil {
+			t.Errorf("404 %s must count as already aborted: %v", code, err)
+		}
+	}
+	// anything else is a real failure and must be reported (it makes the sweeper retry)
+	for status, code := range map[int]string{403: "AccessDenied", 404: "NoSuchBucket", 500: "InternalError", 503: "SlowDown"} {
+		_, c := newFake(t, answer(status, code))
+		if err := c.AbortMultipart(context.Background(), "uploads/v/original.mp4", "id"); err == nil {
+			t.Errorf("%d %s must not be swallowed", status, code)
+		}
+	}
+}

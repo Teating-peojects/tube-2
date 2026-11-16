@@ -796,6 +796,12 @@
           "400": {
             "$ref": "#/components/responses/BadRequest"
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
@@ -803,12 +809,19 @@
             "$ref": "#/components/responses/RateLimited"
           }
         },
-        "security": [],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
         "summary": "POST /admin/videos/{id}/processing/retry",
         "tags": [
           "admin"
         ],
-        "x-handler": "retry"
+        "x-handler": "retry",
+        "x-requires": [
+          "role moderator or higher"
+        ]
       }
     },
     "/api/v1/admin/videos/{id}/restore": {

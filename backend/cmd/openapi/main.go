@@ -350,6 +350,16 @@ func guards(e ast.Expr) []string {
 		case *ast.SelectorExpr:
 			name = f.Sel.Name
 		}
+		if name == "RequireRole" && len(c.Args) == 1 { // middleware.RequireRole(auth.RoleModerator): the role is the argument
+			if sel, ok := c.Args[0].(*ast.SelectorExpr); ok {
+				switch sel.Sel.Name {
+				case "RoleModerator":
+					name = "mod"
+				case "RoleAdmin", "RoleSuperAdmin":
+					name = "adm"
+				}
+			}
+		}
 		if g, ok := guardByName[name]; ok && !seen[g] {
 			seen[g] = true
 			out = append(out, g)

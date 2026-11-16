@@ -66,6 +66,10 @@ func TestSpecShape(t *testing.T) {
 			t.Errorf("%s %s: security %s lacks %s", c.method, c.path, toJSON(op["security"]), c.scheme)
 		}
 	}
+	// role guards passed as arguments (middleware.RequireRole(auth.RoleModerator)) are detected too
+	if op := spec.Paths["/api/v1/admin/videos/{id}/processing/retry"]["post"]; op == nil || !strings.Contains(toJSON(op["x-requires"]), "moderator") {
+		t.Errorf("retry route must require the moderator role: %v", op)
+	}
 	if op := spec.Paths["/api/v1/age/verify"]["post"]; toJSON(op["security"]) != "[]" {
 		t.Errorf("POST /age/verify must be open: %s", toJSON(op["security"]))
 	}

@@ -18,8 +18,11 @@ type Config struct {
 	HeartbeatEvery time.Duration
 	StaleAfter     time.Duration // a PROCESSING job without a heartbeat for this long is re-queued
 	ShutdownGrace  time.Duration // on SIGTERM, how long running jobs may keep going before they are released
-	WorkDir        string
-	AliveFile      string // touched while the worker is healthy (container HEALTHCHECK)
+	// FailedOutputRetention: partial HLS output of FAILED videos is removed after this long (default
+	// 24h; negative disables). The original upload is never removed.
+	FailedOutputRetention time.Duration
+	WorkDir               string
+	AliveFile             string // touched while the worker is healthy (container HEALTHCHECK)
 }
 
 func (c *Config) defaults() {
@@ -37,6 +40,9 @@ func (c *Config) defaults() {
 	}
 	if c.ShutdownGrace <= 0 {
 		c.ShutdownGrace = 30 * time.Second
+	}
+	if c.FailedOutputRetention == 0 {
+		c.FailedOutputRetention = 24 * time.Hour
 	}
 }
 
@@ -173,6 +179,7 @@ func (w *Worker) process(parent context.Context, j Job) {
 			log.Error("could not record job failure", "err", ferr.Error(), "cause", je.Error())
 		case res.Final:
 			w.met.observe(j, "failed", time.Since(start))
+			_ = os.RemoveAll(w.pipe.dir(j.VideoID)) // scratch only; remote partial output goes through the janitor
 			log.Error("job failed permanently", "code", je.Code, "err", je.Error())
 			if res.CreatorID != "" && w.pipe.Notify != nil {
 				w.pipe.Notify(bg, res.CreatorID, j.VideoID)
@@ -188,7 +195,7 @@ func (w *Worker) process(parent context.Context, j Job) {
 func (w *Worker) janitor(ctx context.Context) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
-	for {
+	for tick := 0; ; tick++ {
 		if n, err := w.store.RequeueStale(ctx, w.cfg.StaleAfter); err != nil {
 			if ctx.Err() == nil {
 				w.log.Error("requeue stale failed", "err", err.Error())
@@ -197,6 +204,9 @@ func (w *Worker) janitor(ctx context.Context) {
 			w.log.Warn("re-queued jobs of dead workers", "count", n)
 		}
 		w.cleanWorkDir()
+		if tick%10 == 0 { // every 10 minutes
+			w.cleanupFailed(ctx)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -217,5 +227,31 @@ func (w *Worker) cleanWorkDir() {
 		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > 24*time.Hour {
 			_ = os.RemoveAll(filepath.Join(w.cfg.WorkDir, e.Name()))
 		}
+	}
+}
+
+// cleanupFailed removes the partial HLS output of videos that failed long enough ago. Claiming is a
+// single UPDATE, so replicas never clean the same video; a failed delete releases the claim so a
+// later pass retries. Idempotent, bounded per pass, and it never deletes the original upload.
+func (w *Worker) cleanupFailed(ctx context.Context) {
+	if w.cfg.FailedOutputRetention < 0 {
+		return
+	}
+	ids, err := w.store.ClaimFailedForCleanup(ctx, w.cfg.FailedOutputRetention, 20)
+	if err != nil {
+		if ctx.Err() == nil {
+			w.log.Error("claim failed videos for cleanup", "err", err.Error())
+		}
+		return
+	}
+	for _, id := range ids {
+		if err := w.pipe.CleanupOutputs(ctx, id); err != nil {
+			w.log.Warn("cleanup of failed output failed, will retry", "video", id, "err", sanitizeDiag(err.Error()))
+			_ = w.store.ReleaseCleanup(context.WithoutCancel(ctx), id)
+			w.met.cleanup("error")
+			continue
+		}
+		w.log.Info("removed partial output of a failed video", "video", id)
+		w.met.cleanup("ok")
 	}
 }

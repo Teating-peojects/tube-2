@@ -69,8 +69,8 @@ func TestValidate(t *testing.T) {
 		{"exactly 60s is short", func(p *Probe) { p.Duration = 60 }, 10 << 20, "SHORT", ""},
 		{"60.4s is long", func(p *Probe) { p.Duration = 60.4 }, 10 << 20, "LONG", ""},
 		{"short too large", func(p *Probe) {}, 201 << 20, "", "short_too_large"},
-		{"long up to 5GiB", func(p *Probe) { p.Duration = 600 }, LongMaxBytes, "LONG", ""},
-		{"long over 5GiB", func(p *Probe) { p.Duration = 600 }, LongMaxBytes + 1, "", "too_large"},
+		{"long up to 5GiB", func(p *Probe) { p.Duration = 600 }, DefaultPolicy().LongMaxBytes, "LONG", ""},
+		{"long over 5GiB", func(p *Probe) { p.Duration = 600 }, DefaultPolicy().LongMaxBytes + 1, "", "too_large"},
 		{"61 minutes", func(p *Probe) { p.Duration = 3661 }, 1 << 20, "", "too_long"},
 		{"4k", func(p *Probe) { p.Width, p.Height = 3840, 2160 }, 1 << 20, "", "resolution_too_high"},
 		{"1080p portrait", func(p *Probe) { p.Width, p.Height = 1080, 1920 }, 1 << 20, "SHORT", ""},
@@ -122,20 +122,20 @@ func TestParseProbeRotationAndStreams(t *testing.T) {
 
 func TestHLSArgsAreSafe(t *testing.T) {
 	r := Plan(1920, 1080)[3]
-	args := strings.Join(hlsArgs("/in.mp4", "/out", r, Probe{HasAudio: true, FPS: 120}, 2), " ")
-	for _, want := range []string{"-protocol_whitelist file", "-map_metadata -1", "fps=60", "scale=1920:1080", "-hls_playlist_type vod", "seg_%05d.ts", "-threads 2"} {
+	args := strings.Join(hlsArgs("/in.mp4", "/out", r, Probe{HasAudio: true, FPS: 120}, DefaultProfile(), 2), " ")
+	for _, want := range []string{"-protocol_whitelist file", "-map_metadata -1", "fps=60", "scale=1920:1080,setsar=1", "-preset veryfast", "-hls_playlist_type vod", "seg_%05d.ts", "-threads 2"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args missing %q: %s", want, args)
 		}
 	}
-	if !strings.Contains(strings.Join(hlsArgs("/in.mp4", "/out", r, Probe{}, 0), " "), "-an") {
+	if !strings.Contains(strings.Join(hlsArgs("/in.mp4", "/out", r, Probe{}, DefaultProfile(), 0), " "), "-an") {
 		t.Error("silent source must not map audio")
 	}
 }
 
 func TestThumbTimesClamped(t *testing.T) {
-	ts := thumbTimes(2)
-	if len(ts) != thumbCount {
+	ts := thumbTimes(2, 5)
+	if len(ts) != 5 {
 		t.Fatalf("len %d", len(ts))
 	}
 	for _, x := range ts {
@@ -143,7 +143,7 @@ func TestThumbTimesClamped(t *testing.T) {
 			t.Errorf("time %v outside the clip", x)
 		}
 	}
-	if thumbTimes(0.3)[4] != 0 {
+	if thumbTimes(0.3, 5)[4] != 0 {
 		t.Error("sub-second clip must clamp to 0")
 	}
 }

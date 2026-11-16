@@ -15,19 +15,6 @@ type Rendition struct {
 	Level     string // H.264 level
 }
 
-var rungs = []struct {
-	name        string
-	short, kbps int
-	level       string
-}{
-	{"360p", 360, 800, "3.1"},
-	{"480p", 480, 1400, "3.1"},
-	{"720p", 720, 2800, "3.1"},
-	{"1080p", 1080, 5000, "4.0"},
-}
-
-const audioKbps = 128
-
 func even(n int) int {
 	if n < 2 {
 		return 2
@@ -35,12 +22,15 @@ func even(n int) int {
 	return n &^ 1
 }
 
-// Plan picks the renditions for a source of w x h: every rung up to the source's short side, never
-// upscaling. A source below 360p gets a single "360p" rendition at its native size.
-func Plan(w, h int) []Rendition {
+// Plan is Profile.Plan for the default profile.
+func Plan(w, h int) []Rendition { return DefaultProfile().Plan(w, h) }
+
+// Plan picks the renditions for a source of w x h (display size): every rung up to the source's short
+// side, never upscaling. A source below the first rung gets a single rendition at its native size.
+func (pr Profile) Plan(w, h int) []Rendition {
 	short := min(w, h)
 	mk := func(name string, target, kbps int, level string) Rendition {
-		r := Rendition{Name: name, VideoKbps: kbps, AudioKbps: audioKbps, Level: level}
+		r := Rendition{Name: name, VideoKbps: kbps, AudioKbps: pr.AudioKbps, Level: level}
 		if target > short {
 			target = short
 		}
@@ -52,13 +42,14 @@ func Plan(w, h int) []Rendition {
 		return r
 	}
 	var out []Rendition
-	for _, g := range rungs {
-		if g.short <= short {
-			out = append(out, mk(g.name, g.short, g.kbps, g.level))
+	for _, g := range pr.Rungs {
+		if g.Short <= short {
+			out = append(out, mk(g.Name, g.Short, g.Kbps, g.Level))
 		}
 	}
 	if len(out) == 0 {
-		out = append(out, mk("360p", short, rungs[0].kbps, rungs[0].level))
+		g := pr.Rungs[0]
+		out = append(out, mk(g.Name, short, g.Kbps, g.Level))
 	}
 	return out
 }

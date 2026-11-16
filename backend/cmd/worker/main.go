@@ -143,6 +143,55 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	policy, profile := worker.DefaultPolicy(), worker.DefaultProfile()
+	for _, o := range []struct {
+		key string
+		set func(int)
+	}{
+		{"WORKER_MAX_DURATION_SECONDS", func(n int) { policy.MaxDurationSec = n }},
+		{"WORKER_MAX_SHORT_SIDE", func(n int) { policy.MaxShortSide = n }},
+		{"WORKER_MAX_LONG_SIDE", func(n int) { policy.MaxLongSide = n }},
+		{"WORKER_MAX_FPS", func(n int) { policy.MaxFPS = float64(n) }},
+		{"WORKER_MAX_STREAMS", func(n int) { policy.MaxStreams = n }},
+		{"WORKER_MIN_FREE_MB", func(n int) { policy.MinFreeBytes = uint64(n) << 20 }},
+		{"WORKER_SEGMENT_SECONDS", func(n int) { profile.SegmentSeconds = n }},
+		{"WORKER_AUDIO_KBPS", func(n int) { profile.AudioKbps = n }},
+		{"WORKER_THUMBNAILS", func(n int) { profile.ThumbCount = n }},
+	} {
+		if v := env(o.key, ""); v != "" {
+			n, err := envInt(o.key, 0)
+			if err != nil {
+				return err
+			}
+			o.set(n)
+		}
+	}
+	if v := env("FFMPEG_PRESET", ""); v != "" {
+		profile.Preset = v
+	}
+	if v := env("WORKER_PROFILE_VERSION", ""); v != "" {
+		profile.Version = v
+	}
+	if v := env("WORKER_LADDER", ""); v != "" {
+		rungs, err := worker.ParseLadder(v)
+		if err != nil {
+			return fmt.Errorf("WORKER_LADDER: %w", err)
+		}
+		profile.Rungs = rungs
+		if env("WORKER_PROFILE_VERSION", "") == "" {
+			return errors.New("WORKER_LADDER changes the encoding recipe: also set WORKER_PROFILE_VERSION (it is stored on every video, so the change stays traceable)")
+		}
+	}
+	if err := policy.Check(); err != nil {
+		return fmt.Errorf("worker limits: %w", err)
+	}
+	if err := profile.Check(); err != nil {
+		return fmt.Errorf("encoding profile: %w", err)
+	}
+	retention, err := envDur("WORKER_FAILED_OUTPUT_RETENTION", 24*time.Hour)
+	if err != nil {
+		return err
+	}
 	workDir := env("WORKER_WORKDIR", "/work")
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return fmt.Errorf("WORKER_WORKDIR: %w", err)
@@ -164,6 +213,7 @@ func run() error {
 	pipe := &worker.Pipeline{
 		Store: nil, Storage: store, Log: log, WorkDir: workDir,
 		FFmpeg: env("FFMPEG_PATH", "ffmpeg"), FFprobe: env("FFPROBE_PATH", "ffprobe"), Threads: threads,
+		Policy: policy, Profile: profile,
 	}
 	// Realtime is a convenience (the UI polls the upload status too): Redis is optional here.
 	if u := env("REDIS_URL", ""); u != "" {
@@ -195,7 +245,7 @@ func run() error {
 	pg := worker.NewPG(pool, fmt.Sprintf("%s-%d", host, os.Getpid()))
 	pipe.Store = pg
 	w := worker.New(worker.Config{
-		Concurrency: conc, PollInterval: poll, StaleAfter: stale, ShutdownGrace: grace, WorkDir: workDir,
+		Concurrency: conc, PollInterval: poll, StaleAfter: stale, ShutdownGrace: grace, WorkDir: workDir, FailedOutputRetention: retention,
 		AliveFile: env("WORKER_ALIVE_FILE", "/tmp/worker.alive"),
 	}, pg, pipe, log)
 
@@ -214,7 +264,7 @@ func run() error {
 		log.Info("metrics listening (keep this port internal)", "addr", addr)
 	}
 
-	log.Info("worker started", "concurrency", max(conc, 1), "ffmpeg_threads", threads, "workdir", workDir)
+	log.Info("worker started", "concurrency", max(conc, 1), "ffmpeg_threads", threads, "workdir", workDir, "profile", profile.Version)
 	w.Run(ctx)
 	log.Info("worker stopped")
 	return nil

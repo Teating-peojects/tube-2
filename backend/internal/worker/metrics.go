@@ -38,8 +38,9 @@ GROUP BY 1, 2`)
 
 // Metrics instruments the worker. All methods are safe on a nil *Metrics.
 type Metrics struct {
-	jobs *metrics.Counter
-	dur  *metrics.Histogram
+	jobs  *metrics.Counter
+	dur   *metrics.Histogram
+	clean *metrics.Counter
 }
 
 var jobTypes = []string{"METADATA", "THUMBNAIL", "TRANSCODE", "HLS"}
@@ -52,6 +53,7 @@ func NewMetrics(reg *metrics.Registry, store interface {
 		jobs: reg.NewCounter("worker_jobs_total", "Finished job attempts by type and result (completed, retry, failed, released, lease_lost).", "type", "result"),
 		dur: reg.NewHistogram("worker_job_duration_seconds", "Wall time of a job attempt.",
 			[]float64{1, 5, 15, 30, 60, 120, 300, 600, 1200, 3600}, "type"),
+		clean: reg.NewCounter("worker_cleanup_total", "Cleanups of failed videos' partial HLS output by result (ok, error).", "result"),
 	}
 	reg.AddCollector(func(w *metrics.Writer) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -87,4 +89,10 @@ func (m *Metrics) observe(j Job, result string, d time.Duration) {
 	}
 	m.jobs.Inc(j.Type, result)
 	m.dur.Observe(d.Seconds(), j.Type)
+}
+
+func (m *Metrics) cleanup(result string) {
+	if m != nil {
+		m.clean.Inc(result)
+	}
 }

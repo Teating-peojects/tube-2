@@ -35,6 +35,11 @@ type Pipeline struct {
 	Threads int
 	// Scanner is optional (B10). When set it runs on every original before ffprobe; fail-closed.
 	Scanner Scanner
+	// Policy and Profile: zero values mean DefaultPolicy / DefaultProfile.
+	Policy  Policy
+	Profile Profile
+	// Free reports free scratch bytes (default: statfs); tests replace it.
+	Free func(dir string) (uint64, error)
 	// Notify pushes a realtime event after a commit (optional).
 	Notify func(ctx context.Context, userID, videoID string)
 }
@@ -67,6 +72,41 @@ func (p *Pipeline) Run(ctx context.Context, j Job) error {
 
 func (p *Pipeline) dir(videoID string) string { return filepath.Join(p.WorkDir, videoID) }
 
+func (p *Pipeline) policy() Policy {
+	if p.Policy.MaxDurationSec == 0 {
+		return DefaultPolicy()
+	}
+	return p.Policy
+}
+
+func (p *Pipeline) profile() Profile {
+	if p.Profile.Version == "" {
+		return DefaultProfile()
+	}
+	return p.Profile
+}
+
+// CleanupOutputs removes the partial HLS package of a failed video from storage and the local scratch
+// directory. It is idempotent and NEVER touches the original upload or generated thumbnails.
+func (p *Pipeline) CleanupOutputs(ctx context.Context, videoID string) error {
+	if _, err := p.Storage.DeletePrefix(ctx, "hls/"+videoID+"/"); err != nil {
+		return err
+	}
+	return os.RemoveAll(p.dir(videoID))
+}
+
+// verify proves an object landed in storage with the exact size we sent.
+func (p *Pipeline) verify(ctx context.Context, key string, size int64) error {
+	info, err := p.Storage.Head(ctx, key)
+	if err != nil {
+		return storageErr(ctx, err)
+	}
+	if info.Size != size {
+		return transient("storage_verify", fmt.Errorf("%s: stored %d bytes, sent %d", key, info.Size, size))
+	}
+	return nil
+}
+
 // original returns the local path of the original, downloading it when it is not cached. With
 // hash=true it always downloads fresh and returns the SHA-256 of what storage really holds.
 func (p *Pipeline) original(ctx context.Context, videoID string, v VideoRow, hash bool) (string, []byte, error) {
@@ -79,6 +119,16 @@ func (p *Pipeline) original(ctx context.Context, videoID string, v VideoRow, has
 	if !hash {
 		if st, err := os.Stat(path); err == nil && st.Size() == v.Size {
 			return path, nil, nil
+		}
+	}
+	free := p.Free
+	if free == nil {
+		free = freeBytes
+	}
+	if avail, err := free(d); err == nil {
+		if need := uint64(v.Size)*2 + p.policy().MinFreeBytes; avail < need {
+			// not the file's fault: wait for running jobs to free space instead of failing the upload
+			return "", nil, transient("disk_full", fmt.Errorf("%d bytes free, %d needed", avail, need))
 		}
 	}
 	tmp := path + ".part"
@@ -142,7 +192,7 @@ func (p *Pipeline) metadata(ctx context.Context, j Job, v VideoRow) error {
 		}
 		return transient("ffprobe_failed", err)
 	}
-	vt, secs, je := pr.Validate(v.Size)
+	vt, secs, je := p.policy().Validate(pr, v.Size)
 	if je != nil {
 		return je
 	}
@@ -157,8 +207,6 @@ func (p *Pipeline) metadata(ctx context.Context, j Job, v VideoRow) error {
 	return nil
 }
 
-func even2(n int) int { return even(n) }
-
 func (p *Pipeline) thumbnails(ctx context.Context, j Job, v VideoRow) error {
 	meta, err := p.Store.Meta(ctx, j.VideoID)
 	if err != nil {
@@ -168,26 +216,49 @@ func (p *Pipeline) thumbnails(ctx context.Context, j Job, v VideoRow) error {
 	if err != nil {
 		return err
 	}
+	prof := p.profile()
 	tdir := filepath.Join(p.dir(j.VideoID), "thumbs")
+	_ = os.RemoveAll(tdir)
 	if err := os.MkdirAll(tdir, 0o700); err != nil {
 		return transient("workdir", err)
 	}
-	w := min(thumbMaxWidth, meta.Width)
-	h := even2(meta.Height * w / meta.Width)
-	var items []ThumbOut
-	for i, at := range thumbTimes(float64(meta.Duration)) {
+	type cand struct {
+		file string
+		w, h int
+		luma float64
+	}
+	var cands []cand
+	for i, at := range thumbTimes(float64(meta.Duration), prof.ThumbCount) {
 		out := filepath.Join(tdir, fmt.Sprintf("%d.jpg", i))
-		err := runFFmpeg(ctx, p.FFmpeg, thumbArgs(path, out, at, thumbMaxWidth), 2*time.Minute)
-		if st, serr := os.Stat(out); err != nil || serr != nil || st.Size() == 0 {
+		inspect := func() (cand, error) {
+			w, h, l, err := inspectJPEG(out)
+			return cand{file: out, w: w, h: h, luma: l}, err
+		}
+		err := runFFmpeg(ctx, p.FFmpeg, thumbArgs(path, out, at, prof.ThumbWidth), 2*time.Minute)
+		c, ierr := inspect()
+		if err != nil || ierr != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			// seeking past the last decodable frame: fall back to the very first frame
-			if err2 := runFFmpeg(ctx, p.FFmpeg, thumbArgs(path, out, 0, thumbMaxWidth), 2*time.Minute); err2 != nil {
+			// seeking past the last decodable frame, or a corrupt frame: fall back to the first frame
+			if err2 := runFFmpeg(ctx, p.FFmpeg, thumbArgs(path, out, 0, prof.ThumbWidth), 2*time.Minute); err2 != nil {
 				return asJobError(err2)
 			}
+			if c, ierr = inspect(); ierr != nil {
+				return transient("thumbnail_invalid", ierr)
+			}
 		}
-		f, err := os.Open(out)
+		cands = append(cands, c)
+	}
+	lumas := make([]float64, len(cands))
+	for i, c := range cands {
+		lumas[i] = c.luma
+	}
+	primary := pickPrimary(lumas, len(cands)/2)
+
+	var items []ThumbOut
+	for _, c := range cands {
+		f, err := os.Open(c.file)
 		if err != nil {
 			return transient("thumbnail", err)
 		}
@@ -198,9 +269,12 @@ func (p *Pipeline) thumbnails(ctx context.Context, j Job, v VideoRow) error {
 		if err != nil {
 			return storageErr(ctx, err)
 		}
-		items = append(items, ThumbOut{Key: key, W: w, H: h})
+		if err := p.verify(ctx, key, st.Size()); err != nil {
+			return err
+		}
+		items = append(items, ThumbOut{Key: key, W: c.w, H: c.h})
 	}
-	old, err := p.Store.ReplaceThumbnails(ctx, j, items, len(items)/2)
+	old, err := p.Store.ReplaceThumbnails(ctx, j, items, primary)
 	if err != nil {
 		return err
 	}
@@ -226,19 +300,24 @@ func (p *Pipeline) transcode(ctx context.Context, j Job, v VideoRow) error {
 	if err != nil {
 		return err
 	}
+	prof := p.profile()
 	pr := Probe{Width: meta.Width, Height: meta.Height, FPS: meta.FPS, HasAudio: meta.HasAudio}
 	// Start from a clean prefix: a previous failed attempt may have left segments behind.
 	if _, err := p.Storage.DeletePrefix(ctx, "hls/"+j.VideoID+"/"); err != nil {
 		return storageErr(ctx, err)
 	}
-	for _, r := range Plan(meta.Width, meta.Height) {
+	for _, r := range prof.Plan(meta.Width, meta.Height) {
 		out := filepath.Join(p.dir(j.VideoID), "hls", r.Name)
 		_ = os.RemoveAll(out)
 		if err := os.MkdirAll(out, 0o700); err != nil {
 			return transient("workdir", err)
 		}
-		if err := runFFmpeg(ctx, p.FFmpeg, hlsArgs(path, out, r, pr, p.Threads), encodeTimeout(float64(meta.Duration))); err != nil {
+		if err := runFFmpeg(ctx, p.FFmpeg, hlsArgs(path, out, r, pr, prof, p.Threads), encodeTimeout(float64(meta.Duration))); err != nil {
 			return asJobErrorCtx(ctx, err)
+		}
+		// Validate the package locally BEFORE uploading anything: a broken encode is retried, never published.
+		if _, err := ValidatePlaylist(out, float64(meta.Duration), prof.SegmentSeconds); err != nil {
+			return transient("output_invalid", err)
 		}
 		prefix := "hls/" + j.VideoID + "/" + r.Name + "/"
 		n, err := p.uploadDir(ctx, out, prefix)
@@ -294,6 +373,9 @@ func (p *Pipeline) uploadDir(ctx context.Context, dir, prefix string) (int64, er
 		if err := p.Storage.Put(ctx, prefix+name, ctype, cache, f, st.Size()); err != nil {
 			return storageErr(ctx, err)
 		}
+		if err := p.verify(ctx, prefix+name, st.Size()); err != nil { // stored object verified before the video can complete
+			return err
+		}
 		mu.Lock()
 		total += st.Size()
 		mu.Unlock()
@@ -334,7 +416,8 @@ func (p *Pipeline) master(ctx context.Context, j Job, v VideoRow) error {
 	if err != nil {
 		return err
 	}
-	plan := Plan(meta.Width, meta.Height)
+	prof := p.profile()
+	plan := prof.Plan(meta.Width, meta.Height)
 	ready, err := p.Store.Variants(ctx, j.VideoID)
 	if err != nil {
 		return err
@@ -350,10 +433,16 @@ func (p *Pipeline) master(ctx context.Context, j Job, v VideoRow) error {
 	}
 	key := "hls/" + j.VideoID + "/master.m3u8"
 	body := MasterPlaylist(plan, meta.HasAudio)
+	if err := ValidateMaster(body, plan); err != nil {
+		return transient("output_invalid", err)
+	}
 	if err := p.Storage.PutBytes(ctx, key, "application/vnd.apple.mpegurl", cachePlaylist, []byte(body)); err != nil {
 		return storageErr(ctx, err)
 	}
-	creator, err := p.Store.FinishHLS(ctx, j, key)
+	if err := p.verify(ctx, key, int64(len(body))); err != nil {
+		return err
+	}
+	creator, err := p.Store.FinishHLS(ctx, j, key, prof.Version)
 	if err != nil {
 		return err
 	}

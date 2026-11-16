@@ -87,7 +87,7 @@ ON CONFLICT (video_id, resolution) DO UPDATE SET width = EXCLUDED.width, height 
   storage_key = EXCLUDED.storage_key, manifest_path = EXCLUDED.manifest_path, file_size_bytes = EXCLUDED.file_size_bytes,
   status = 'READY', updated_at = now()`
 	qVariants = `SELECT resolution::text FROM video_variants WHERE video_id = $1::uuid AND status = 'READY'`
-	qReady    = `UPDATE videos SET status = 'READY', hls_master_key = $2, updated_at = now()
+	qReady    = `UPDATE videos SET status = 'READY', hls_master_key = $2, processing_profile = $3, outputs_cleaned_at = NULL, updated_at = now()
 WHERE id = $1::uuid AND status = 'PROCESSING' AND deleted_at IS NULL AND moderation_status <> 'REMOVED' RETURNING creator_id::text`
 )
 
@@ -127,13 +127,13 @@ func (s *PG) RequeueStale(ctx context.Context, after time.Duration) (int, error)
 	return n, s.pool.QueryRow(ctx, qStale, int(after.Seconds())).Scan(&n)
 }
 
+// errText is what lands in video_processing_jobs.error_message: a stable code and a user-safe
+// sentence, nothing else. The underlying error (ffmpeg output, paths, storage detail) goes to the
+// worker log only, so it can never leak through an API.
 func errText(je *JobError) string {
 	t := je.Code + ": " + je.Message
-	if je.Err != nil {
-		t += " (" + je.Err.Error() + ")"
-	}
-	if len(t) > 1900 {
-		t = t[:1900]
+	if len(t) > 500 {
+		t = t[:500]
 	}
 	return t
 }
@@ -309,9 +309,9 @@ func (s *PG) Variants(ctx context.Context, videoID string) ([]string, error) {
 	return out, rows.Err()
 }
 
-func (s *PG) FinishHLS(ctx context.Context, j Job, masterKey string) (creator string, err error) {
+func (s *PG) FinishHLS(ctx context.Context, j Job, masterKey, profile string) (creator string, err error) {
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, qReady, j.VideoID, masterKey).Scan(&creator)
+		err := tx.QueryRow(ctx, qReady, j.VideoID, masterKey, profile).Scan(&creator)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrVideoGone
 		}
@@ -325,6 +325,36 @@ func (s *PG) FinishHLS(ctx context.Context, j Job, masterKey string) (creator st
 		return err
 	})
 	return creator, err
+}
+
+// ClaimFailedForCleanup is one statement, so two workers never claim the same video.
+func (s *PG) ClaimFailedForCleanup(ctx context.Context, olderThan time.Duration, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `UPDATE videos SET outputs_cleaned_at = now()
+WHERE id IN (
+  SELECT v.id FROM videos v
+  WHERE v.status = 'FAILED' AND v.outputs_cleaned_at IS NULL AND v.deleted_at IS NULL
+    AND v.updated_at < now() - make_interval(secs => $1::int)
+    AND NOT EXISTS (SELECT 1 FROM video_processing_jobs j WHERE j.video_id = v.id AND j.status IN ('QUEUED', 'PROCESSING'))
+  ORDER BY v.updated_at LIMIT $2 FOR UPDATE SKIP LOCKED)
+RETURNING id::text`, int(olderThan.Seconds()), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func (s *PG) ReleaseCleanup(ctx context.Context, videoID string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE videos SET outputs_cleaned_at = NULL WHERE id = $1::uuid AND status = 'FAILED'`, videoID)
+	return err
 }
 
 // RemoveVideo marks the video REMOVED and audits it in one transaction (the same effect the

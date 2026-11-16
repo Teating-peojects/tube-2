@@ -61,10 +61,7 @@ func (e *ExecScanner) Scan(ctx context.Context, path string) (bool, string, erro
 	cmd.Stdout, cmd.Stderr = &out, &out
 	detach(cmd)
 	err := cmd.Run()
-	tail := strings.TrimSpace(out.String())
-	if len(tail) > 300 {
-		tail = tail[:300]
-	}
+	tail := sanitizeDiag(out.String())
 	if err == nil {
 		return false, "", nil
 	}

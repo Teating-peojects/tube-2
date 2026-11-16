@@ -10,22 +10,9 @@ import (
 	"strings"
 )
 
-// Product limits, enforced here regardless of what the browser claimed.
-const (
-	MaxDurationSec = 60 * 60        // 60 minutes
-	ShortMaxSec    = 60             // SHORT <= 60 s, LONG > 60 s
-	ShortMaxBytes  = 200 << 20      // 200 MiB
-	LongMaxBytes   = int64(5) << 30 // 5 GiB
-	MaxShortSide   = 1080           // "max 1080p": short side <= 1080 and long side <= 1920
-	MaxLongSide    = 1920
-)
-
-var (
-	allowedVideoCodecs = map[string]bool{"h264": true, "hevc": true, "vp8": true, "vp9": true, "av1": true}
-	// ffprobe format_name -> container. Anything else (hls, concat, image2, ...) is rejected before
-	// ffmpeg is allowed to decode it.
-	allowedFormats = map[string]string{"mov,mp4,m4a,3gp,3g2,mj2": "mp4", "matroska,webm": "webm"}
-)
+// ffprobe format_name -> container. Anything else (hls, concat, image2, ...) is rejected before
+// ffmpeg is allowed to decode it.
+var allowedFormats = map[string]string{"mov,mp4,m4a,3gp,3g2,mj2": "mp4", "matroska,webm": "webm"}
 
 // Probe is what the pipeline needs to know about the original.
 type Probe struct {
@@ -38,6 +25,8 @@ type Probe struct {
 	Container     string // mp4 | mov | webm
 	Bitrate       int64
 	HasAudio      bool
+	Streams       int    // number of streams of any kind
+	SAR           string // sample aspect ratio as reported ("16:11"); Width is already display-corrected
 }
 
 type ffprobeOut struct {
@@ -46,6 +35,7 @@ type ffprobeOut struct {
 		CodecName    string            `json:"codec_name"`
 		Width        int               `json:"width"`
 		Height       int               `json:"height"`
+		SAR          string            `json:"sample_aspect_ratio"`
 		AvgFrameRate string            `json:"avg_frame_rate"`
 		RFrameRate   string            `json:"r_frame_rate"`
 		Tags         map[string]string `json:"tags"`
@@ -81,6 +71,7 @@ func ParseProbe(raw []byte, ext string) (Probe, error) {
 			p.Container = "mkv" // matroska and webm share ffprobe's format name: the extension tells them apart
 		}
 	}
+	p.Streams = len(o.Streams)
 	seenVideo := false
 	for _, s := range o.Streams {
 		switch s.CodecType {
@@ -90,6 +81,12 @@ func ParseProbe(raw []byte, ext string) (Probe, error) {
 			}
 			seenVideo = true
 			p.VideoCodec, p.Width, p.Height = s.CodecName, s.Width, s.Height
+			// Non-square pixels (anamorphic DVD/broadcast sources): players show the display size, so
+			// plan and encode for it, not for the stored pixel grid.
+			if n, d, ok := parseRatio(s.SAR); ok && n != d {
+				p.SAR = s.SAR
+				p.Width = int(math.Round(float64(p.Width) * float64(n) / float64(d)))
+			}
 			p.FPS = parseRate(s.AvgFrameRate)
 			if p.FPS == 0 {
 				p.FPS = parseRate(s.RFrameRate)
@@ -115,6 +112,20 @@ func ParseProbe(raw []byte, ext string) (Probe, error) {
 	return p, nil
 }
 
+// parseRatio reads ffprobe's "16:11" (0:1 and 0:0 mean unknown).
+func parseRatio(s string) (n, d int, ok bool) {
+	a, b, found := strings.Cut(s, ":")
+	if !found {
+		return 0, 0, false
+	}
+	n, e1 := strconv.Atoi(a)
+	d, e2 := strconv.Atoi(b)
+	if e1 != nil || e2 != nil || n <= 0 || d <= 0 {
+		return 0, 0, false
+	}
+	return n, d, true
+}
+
 func parseRate(s string) float64 {
 	n, d, ok := strings.Cut(s, "/")
 	if !ok {
@@ -129,37 +140,9 @@ func parseRate(s string) float64 {
 	return a / b
 }
 
-// Validate applies the product limits to a probed original. size is the verified byte size.
-// It returns the video type (SHORT/LONG) and the duration in whole seconds (rounded up, so a
-// 60.4 s clip is LONG, never a SHORT that overruns the limit).
+// Validate applies the default policy (see Policy.Validate for the configurable one).
 func (p Probe) Validate(size int64) (videoType string, seconds int, err *JobError) {
-	switch {
-	case p.Container == "":
-		return "", 0, permanent("unsupported_container", "Only MP4, MOV and WebM files are supported")
-	case p.VideoCodec == "" || p.Width <= 0 || p.Height <= 0:
-		return "", 0, permanent("no_video_stream", "That file does not contain a video track")
-	case !allowedVideoCodecs[p.VideoCodec]:
-		return "", 0, permanent("unsupported_codec", "That video codec is not supported")
-	case math.IsNaN(p.Duration) || p.Duration <= 0:
-		return "", 0, permanent("invalid_duration", "We couldn't read the length of that video")
-	case p.Duration > MaxDurationSec:
-		return "", 0, permanent("too_long", "Videos can be at most 60 minutes long")
-	case min(p.Width, p.Height) > MaxShortSide || max(p.Width, p.Height) > MaxLongSide:
-		return "", 0, permanent("resolution_too_high", "Maximum resolution is 1080p (1920x1080)")
-	case min(p.Width, p.Height) < 16:
-		return "", 0, permanent("resolution_too_low", "That video is too small")
-	}
-	seconds = max(1, int(math.Ceil(p.Duration)))
-	if seconds <= ShortMaxSec {
-		if size > ShortMaxBytes {
-			return "", 0, permanent("short_too_large", "Videos up to 60 seconds can be at most 200 MB")
-		}
-		return "SHORT", seconds, nil
-	}
-	if size > LongMaxBytes {
-		return "", 0, permanent("too_large", "Videos can be at most 5 GB")
-	}
-	return "LONG", seconds, nil
+	return DefaultPolicy().Validate(p, size)
 }
 
 // ProbeFile runs ffprobe on a local file. Only the file protocol is allowed, so a crafted

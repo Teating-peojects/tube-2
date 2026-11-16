@@ -73,8 +73,15 @@ type Store interface {
 	SaveVariant(ctx context.Context, videoID string, v VariantOut) error
 	FinishTranscode(ctx context.Context, j Job) error
 	Variants(ctx context.Context, videoID string) (ready []string, err error)
-	// FinishHLS sets hls_master_key, moves the video to READY, completes HLS and notifies the creator.
-	FinishHLS(ctx context.Context, j Job, masterKey string) (creatorID string, err error)
+	// FinishHLS sets hls_master_key and the encoding profile version, moves the video to READY,
+	// completes HLS and notifies the creator.
+	FinishHLS(ctx context.Context, j Job, masterKey, profile string) (creatorID string, err error)
+
+	// ClaimFailedForCleanup marks up to limit FAILED videos (failed longer than olderThan ago, no
+	// active job, not yet cleaned) as being cleaned and returns their ids. The caller deletes their
+	// partial HLS output, or calls ReleaseCleanup to try again later. The original is never touched.
+	ClaimFailedForCleanup(ctx context.Context, olderThan time.Duration, limit int) ([]string, error)
+	ReleaseCleanup(ctx context.Context, videoID string) error
 }
 
 // backoff is 30s, 60s, 120s ... capped at 10 minutes.

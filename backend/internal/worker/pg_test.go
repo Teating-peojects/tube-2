@@ -63,6 +63,26 @@ func (e *pgEnv) exec(q string, args ...any) {
 	}
 }
 
+// backdate moves updated_at into the past. A trigger rewrites updated_at on every UPDATE, so the
+// triggers are switched off for this one transaction (superuser fixture only).
+func (e *pgEnv) backdate(ids []string, ago string) {
+	e.t.Helper()
+	tx, err := e.admin.Begin(context.Background())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	if _, err := tx.Exec(context.Background(), `SET LOCAL session_replication_role = replica`); err != nil {
+		e.t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `UPDATE videos SET updated_at = now() - $2::interval WHERE id = ANY($1::uuid[])`, ids, ago); err != nil {
+		e.t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
 func (e *pgEnv) scan(q string, args ...any) []any {
 	e.t.Helper()
 	rows, err := e.admin.Query(context.Background(), q, args...)
@@ -252,13 +272,16 @@ func TestPGFullChain(t *testing.T) {
 	}
 
 	// HLS -> READY (satisfies videos_ready_requirements) + notification
-	creator, err := owner.FinishHLS(ctxb, hj, "hls/"+vid+"/master.m3u8")
+	creator, err := owner.FinishHLS(ctxb, hj, "hls/"+vid+"/master.m3u8", "h264-aac-hls-v1")
 	if err != nil || creator != e.user {
 		t.Fatalf("FinishHLS %q %v", creator, err)
 	}
 	if e.str(`SELECT status::text FROM videos WHERE id = $1::uuid`, vid) != "READY" ||
 		e.str(`SELECT hls_master_key FROM videos WHERE id = $1::uuid`, vid) != "hls/"+vid+"/master.m3u8" {
 		t.Fatal("video not READY")
+	}
+	if e.str(`SELECT processing_profile FROM videos WHERE id = $1::uuid`, vid) != "h264-aac-hls-v1" {
+		t.Fatal("encoding profile version not stored on the video")
 	}
 	if e.num(`SELECT count(*) FROM notifications WHERE video_id = $1::uuid AND type = 'VIDEO_READY' AND user_id = $2::uuid`, vid, e.user) != 1 {
 		t.Fatal("VIDEO_READY notification missing")
@@ -449,5 +472,55 @@ func TestPGQueueStats(t *testing.T) {
 	}
 	if failed < 1 {
 		t.Fatalf("recent FAILED jobs not counted: %+v", stats)
+	}
+}
+
+func TestPGCleanupClaimsOnlyOldFailedVideosOnce(t *testing.T) {
+	e := newPGEnv(t)
+	s := e.store("w")
+	failed := func() string { // a FAILED video with no active job
+		vid := e.video(3)
+		e.exec(`DELETE FROM video_processing_jobs WHERE video_id = $1::uuid`, vid)
+		e.exec(`UPDATE videos SET status = 'FAILED' WHERE id = $1::uuid`, vid)
+		return vid
+	}
+	old, fresh, withJob, processing := failed(), failed(), failed(), e.video(3)
+	e.backdate([]string{old, withJob}, "3 days")
+	e.exec(`INSERT INTO video_processing_jobs (video_id, job_type) VALUES ($1::uuid, 'METADATA')`, withJob) // a retry is queued
+
+	ids, err := s.ClaimFailedForCleanup(ctxb, 24*time.Hour, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := func(list []string, id string) bool {
+		for _, x := range list {
+			if x == id {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(ids, old) {
+		t.Fatalf("old failed video not claimed: %v", ids)
+	}
+	if has(ids, fresh) || has(ids, withJob) || has(ids, processing) {
+		t.Fatalf("claimed a video that must be kept (fresh=%v withJob=%v processing=%v)", has(ids, fresh), has(ids, withJob), has(ids, processing))
+	}
+	// claimed exactly once
+	again, _ := s.ClaimFailedForCleanup(ctxb, 24*time.Hour, 50)
+	if has(again, old) {
+		t.Fatal("the same video was claimed twice")
+	}
+	// a failed delete releases the claim: the video is claimable again once the retention period has
+	// passed again (the claim itself touches updated_at, so a flapping store cannot cause a hot loop)
+	if err := s.ReleaseCleanup(ctxb, old); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ = s.ClaimFailedForCleanup(ctxb, 24*time.Hour, 50); has(again, old) {
+		t.Fatal("released video retried immediately")
+	}
+	e.backdate([]string{old}, "3 days")
+	if again, _ = s.ClaimFailedForCleanup(ctxb, 24*time.Hour, 50); !has(again, old) {
+		t.Fatal("released video was not claimable again")
 	}
 }

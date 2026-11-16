@@ -51,6 +51,15 @@ func (m *memStorage) Put(_ context.Context, key, ctype, _ string, r io.Reader, _
 func (m *memStorage) PutBytes(ctx context.Context, key, ctype, cc string, b []byte) error {
 	return m.Put(ctx, key, ctype, cc, bytes.NewReader(b), int64(len(b)))
 }
+func (m *memStorage) Head(_ context.Context, key string) (storage.ObjectInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.objs[key]
+	if !ok {
+		return storage.ObjectInfo{}, storage.ErrNotFound
+	}
+	return storage.ObjectInfo{Size: int64(len(b))}, nil
+}
 func (m *memStorage) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	delete(m.objs, key)
@@ -94,6 +103,7 @@ type fakeStore struct {
 	done     []string
 	gotMeta  MetadataResult
 	removed  string
+	profile  string
 }
 
 func (f *fakeStore) Video(context.Context, string) (VideoRow, error) { return f.video, nil }
@@ -131,8 +141,9 @@ func (f *fakeStore) Variants(context.Context, string) ([]string, error) {
 	}
 	return out, nil
 }
-func (f *fakeStore) FinishHLS(_ context.Context, _ Job, key string) (string, error) {
+func (f *fakeStore) FinishHLS(_ context.Context, _ Job, key, profile string) (string, error) {
 	f.master = key
+	f.profile = profile
 	f.done = append(f.done, "HLS")
 	return "creator-1", nil
 }
@@ -214,6 +225,9 @@ func TestPipelineEndToEnd(t *testing.T) {
 		}
 	}
 	// HLS layout, and every object must be reachable through the playback token path
+	if st.profile != "h264-aac-hls-v1" {
+		t.Errorf("profile version not recorded: %q", st.profile)
+	}
 	if st.master != "hls/"+vid+"/master.m3u8" || notified != "creator-1/"+vid {
 		t.Errorf("master %q notified %q", st.master, notified)
 	}

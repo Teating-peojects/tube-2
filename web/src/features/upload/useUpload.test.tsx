@@ -9,7 +9,7 @@ import type { UploadInit } from "@/types";
 import { classify, useUpload } from "./useUpload";
 
 vi.mock("@/services/upload", () => ({
-  initUpload: vi.fn(), completeUpload: vi.fn(), abortUpload: vi.fn(), retryUpload: vi.fn(), getUploadStatus: vi.fn(), putPart: vi.fn(),
+  initUpload: vi.fn(), completeUpload: vi.fn(), abortUpload: vi.fn(), retryUpload: vi.fn(), getUploadStatus: vi.fn(), putPart: vi.fn(), cancelProcessing: vi.fn(),
 }));
 vi.mock("@/lib/realtime", () => ({ useRealtime: () => {} }));
 
@@ -291,5 +291,55 @@ describe("useUpload", () => {
     act(() => result.current.reset());
     expect(m.abortUpload).not.toHaveBeenCalled();
     expect(phase(result)).toBe("idle");
+  });
+
+  describe("processing controls", () => {
+    const toProcessing = async () => {
+      const { result } = renderHook(() => useUpload(), { wrapper });
+      act(() => result.current.start(file()));
+      await waitFor(() => expect(phase(result)).toBe("processing"));
+      return result;
+    };
+
+    it("cancels processing of THIS video (by video id, not upload id) and refreshes the status", async () => {
+      m.cancelProcessing.mockResolvedValue(undefined);
+      const result = await toProcessing();
+      m.getUploadStatus.mockResolvedValue({ status: "failed", progress: 0, thumbnails: [], error: "Processing was cancelled." });
+      await act(async () => { await result.current.cancelProcessing(); });
+      expect(m.cancelProcessing).toHaveBeenCalledWith("video-u1");
+      await waitFor(() => expect(phase(result)).toBe("failed"));
+      expect(result.current.error).toBe("Processing was cancelled.");
+    });
+
+    it("treats 409 (already finished) as a refresh, not an error", async () => {
+      m.cancelProcessing.mockRejectedValue(new ApiError(409, "Not processing", "invalid_state"));
+      const result = await toProcessing();
+      m.getUploadStatus.mockResolvedValue({ status: "ready", progress: 100, thumbnails: [] });
+      await act(async () => { await result.current.cancelProcessing(); });
+      await waitFor(() => expect(phase(result)).toBe("ready"));
+    });
+
+    it("lets other failures reach the caller so the UI can show them", async () => {
+      m.cancelProcessing.mockRejectedValue(new ApiError(500, "boom", "internal"));
+      const result = await toProcessing();
+      await expect(result.current.cancelProcessing()).rejects.toBeInstanceOf(ApiError);
+    });
+
+    it("shows the specific failure reason from the server", async () => {
+      m.getUploadStatus.mockResolvedValue({ status: "failed", progress: 0, thumbnails: [], error: "That video is longer than the maximum of 1 hour(s)" });
+      const { result } = renderHook(() => useUpload(), { wrapper });
+      act(() => result.current.start(file()));
+      await waitFor(() => expect(phase(result)).toBe("failed"));
+      expect(result.current.processingFailed).toBe(true);
+      expect(result.current.error).toContain("longer than the maximum");
+    });
+
+    it("falls back to a generic text only when the server sent no reason", async () => {
+      m.getUploadStatus.mockResolvedValue({ status: "failed", progress: 0, thumbnails: [] });
+      const { result } = renderHook(() => useUpload(), { wrapper });
+      act(() => result.current.start(file()));
+      await waitFor(() => expect(phase(result)).toBe("failed"));
+      expect(result.current.error).toBe("Processing failed. Please upload the file again.");
+    });
   });
 });

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime } from "@/lib/realtime";
 import { browserOnline, UploadError, uploadParts, waitForOnline, type Progress } from "@/lib/uploader";
 import { ApiError } from "@/services/api";
-import { abortUpload, completeUpload, getUploadStatus, initUpload, putPart, retryUpload } from "@/services/upload";
+import { abortUpload, cancelProcessing as cancelProcessingRequest, completeUpload, getUploadStatus, initUpload, putPart, retryUpload } from "@/services/upload";
 import type { UploadInit, UploadPhase } from "@/types";
 
 type ClientPhase = "idle" | "preparing" | "uploading" | "uploaded" | "failed" | "cancelled";
@@ -203,6 +203,18 @@ export function useUpload() {
   useRealtime(client === "uploaded" && session ? `video:${session.videoId}` : null, () => void qc.invalidateQueries({ queryKey: statusKey }));
 
   const s = status.data?.status;
+
+  /** Stops server-side processing of this video. 409 means it already finished or failed: just refresh the status. */
+  const cancelProcessing = useCallback(async () => {
+    if (!session) return;
+    try {
+      await cancelProcessingRequest(session.videoId);
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 409) throw e;
+    }
+    await qc.invalidateQueries({ queryKey: ["upload-status", session.uploadId] });
+  }, [session, qc]);
+
   const phase: UploadPhase =
     client === "idle" ? "idle" : client === "cancelled" ? "cancelled" : client === "failed" ? "failed"
       : client === "preparing" ? "preparing" : client === "uploading" ? "uploading"
@@ -218,7 +230,9 @@ export function useUpload() {
 
   return {
     phase, progress, fileInfo, session, serverStatus: status.data, offline, canRetry,
-    processingFailed: s === "failed", error: s === "failed" ? "Processing failed. Please upload the file again." : error,
-    start, cancel, retry: run, reset,
+    processingFailed: s === "failed",
+    // the server sends a safe, specific reason ("longer than 60 minutes", "cancelled"); the generic text is only a fallback
+    error: s === "failed" ? status.data?.error || "Processing failed. Please upload the file again." : error,
+    start, cancel, cancelProcessing, retry: run, reset,
   };
 }

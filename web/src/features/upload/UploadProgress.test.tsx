@@ -54,4 +54,44 @@ describe("UploadProgress: offline and refused files", () => {
     render(<UploadProgress {...props} phase="failed" error="Connection lost." />);
     for (const name of ["Retry upload", "Cancel"]) expect(screen.getByRole("button", { name })).toHaveClass("h-11");
   });
+
+  describe("cancelling processing", () => {
+    it("offers it only while the server is processing or encoding", () => {
+      const onCancelProcessing = vi.fn();
+      const { rerender } = render(<UploadProgress {...props} phase="processing" onCancelProcessing={onCancelProcessing} />);
+      expect(screen.getByRole("button", { name: "Cancel processing" })).toBeInTheDocument();
+      rerender(<UploadProgress {...props} phase="encoding" onCancelProcessing={onCancelProcessing} />);
+      expect(screen.getByRole("button", { name: "Cancel processing" })).toBeInTheDocument();
+      for (const phase of ["uploading", "ready", "completed", "failed", "cancelled"] as const) {
+        rerender(<UploadProgress {...props} phase={phase} onCancelProcessing={onCancelProcessing} />);
+        expect(screen.queryByRole("button", { name: /Cancel processing|Cancelling/ })).not.toBeInTheDocument();
+      }
+    });
+    it("is hidden when the page does not provide the action", () => {
+      render(<UploadProgress {...props} phase="encoding" />);
+      expect(screen.queryByRole("button", { name: "Cancel processing" })).not.toBeInTheDocument();
+    });
+    it("calls the action once and disables the button while it runs", async () => {
+      let finish!: () => void;
+      const onCancelProcessing = vi.fn(() => new Promise<void>((r) => { finish = r; }));
+      render(<UploadProgress {...props} phase="processing" onCancelProcessing={onCancelProcessing} />);
+      await userEvent.click(screen.getByRole("button", { name: "Cancel processing" }));
+      const busy = screen.getByRole("button", { name: "Cancelling…" });
+      expect(busy).toBeDisabled();
+      await userEvent.click(busy); // a second click does nothing
+      expect(onCancelProcessing).toHaveBeenCalledTimes(1);
+      finish();
+      expect(await screen.findByRole("button", { name: "Cancel processing" })).toBeEnabled();
+    });
+    it("tells the creator when cancelling failed", async () => {
+      const onCancelProcessing = vi.fn().mockRejectedValue(new Error("network"));
+      render(<UploadProgress {...props} phase="processing" onCancelProcessing={onCancelProcessing} />);
+      await userEvent.click(screen.getByRole("button", { name: "Cancel processing" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't cancel processing");
+    });
+    it("shows the server's specific reason when processing failed", () => {
+      render(<UploadProgress {...props} phase="failed" failedAtProcessing error="That video is longer than the maximum of 1 hour(s)" />);
+      expect(screen.getByRole("alert")).toHaveTextContent("longer than the maximum");
+    });
+  });
 });

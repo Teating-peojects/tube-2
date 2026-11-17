@@ -97,6 +97,8 @@ RETURNING s.id::text, s.video_id::text, s.storage_key, s.provider_upload_id`
   (SELECT j.job_type::text FROM video_processing_jobs j WHERE j.video_id = $1::uuid AND j.status IN ('QUEUED', 'PROCESSING') ORDER BY j.created_at LIMIT 1)`
 	qGeneratedThumbs = `SELECT id::text, storage_key FROM video_thumbnails WHERE video_id = $1::uuid AND source = 'GENERATED' AND status = 'READY' ORDER BY created_at, id LIMIT 6`
 	qVideoModeration = `SELECT moderation_status::text FROM videos WHERE id = $1::uuid`
+	qLastJobFailure  = `SELECT split_part(COALESCE(error_message, ''), ':', 1) FROM video_processing_jobs
+WHERE video_id = $1::uuid AND status IN ('FAILED', 'CANCELLED') ORDER BY updated_at DESC LIMIT 1`
 
 	qInsertThumb   = `INSERT INTO video_thumbnails (video_id, storage_key, type, source, status) VALUES ($1::uuid, $2, 'THUMBNAIL', 'CUSTOM', 'PENDING') RETURNING id::text`
 	qCountThumbs   = `SELECT count(*)::int FROM video_thumbnails WHERE video_id = $1::uuid AND source = 'CUSTOM'`
@@ -370,7 +372,9 @@ type Progress struct {
 	Done, Failed int
 	Active       *string // job type being worked on, or nil
 	Moderation   string
-	Thumbs       []ThumbRow
+	// FailCode is the stable code of the latest failed or cancelled job ("too_long", "cancelled"...); empty if none.
+	FailCode string
+	Thumbs   []ThumbRow
 }
 
 type ThumbRow struct{ ID, Key string }
@@ -383,6 +387,12 @@ func (r *Upload) Progress(ctx context.Context, videoID string) (Progress, error)
 	}
 	if err := r.pool.QueryRow(ctx, qVideoModeration, videoID).Scan(&p.Moderation); err != nil {
 		return p, err
+	}
+	if p.Active == nil { // nothing is running: the latest failure (or cancellation), if any, explains the state
+		// error_message is "<code>: <safe sentence>"; only the code is used (the service maps it to text)
+		if err := r.pool.QueryRow(ctx, qLastJobFailure, videoID).Scan(&p.FailCode); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return p, err
+		}
 	}
 	th, err := r.GeneratedThumbs(ctx, videoID)
 	p.Thumbs = th

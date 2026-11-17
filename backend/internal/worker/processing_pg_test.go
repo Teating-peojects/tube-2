@@ -239,3 +239,52 @@ func TestCancelKillsARunningJob(t *testing.T) {
 		t.Fatal("results of a cancelled job were stored")
 	}
 }
+
+// The failure code the worker writes is what the status endpoint reads: the whole chain of
+// "worker fails a job" -> "creator sees a specific reason", against the real schema.
+func TestFailureCodeReachesTheStatusQuery(t *testing.T) {
+	e := newPGEnv(t)
+	dsn := os.Getenv("TEST_WORKER_APP_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_WORKER_APP_DATABASE_URL not set")
+	}
+	app, err := pgxpool.New(ctxb, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(app.Close)
+	up := repository.NewUpload(app)
+	svc := processingSvc(t, e)
+
+	// a permanent worker failure: the code is stored, the message with paths/ffmpeg text never is
+	vid := e.video(3)
+	s := e.store("w")
+	j := claimFor(t, s, vid)
+	je := permanent("too_long", "That video is longer than the maximum of 1 hour(s)")
+	je.Err = errors.New("ffmpeg said /work/secret/path.mp4: invalid data")
+	if _, err := s.Fail(ctxb, j, je); err != nil {
+		t.Fatal(err)
+	}
+	if stored := e.str(`SELECT error_message FROM video_processing_jobs WHERE video_id = $1::uuid`, vid); strings.Contains(stored, "ffmpeg") || strings.Contains(stored, "/work") {
+		t.Fatalf("internal detail reached the database: %q", stored)
+	}
+	pr, err := up.Progress(ctxb, vid)
+	if err != nil || pr.FailCode != "too_long" {
+		t.Fatalf("status query: %+v %v", pr, err)
+	}
+
+	// a cancellation reports its own code
+	v2 := e.video(3)
+	if err := svc.Cancel(ctxb, principal(e.user, auth.RoleUser), service.ClientInfo{}, v2, ""); err != nil {
+		t.Fatal(err)
+	}
+	if pr, err := up.Progress(ctxb, v2); err != nil || pr.FailCode != "cancelled" {
+		t.Fatalf("cancelled: %+v %v", pr, err)
+	}
+
+	// while something is running there is no failure to explain
+	v3 := e.video(3)
+	if pr, err := up.Progress(ctxb, v3); err != nil || pr.FailCode != "" || pr.Active == nil {
+		t.Fatalf("active: %+v %v", pr, err)
+	}
+}

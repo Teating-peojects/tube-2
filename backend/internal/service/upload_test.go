@@ -128,6 +128,7 @@ func (f *fakeStorage) DeletePrefix(_ context.Context, prefix string) (int, error
 }
 
 type fakeUploads struct {
+	progress  repository.Progress // returned by Progress when Moderation is set
 	sess      *repository.UploadSession
 	open      int
 	created   *repository.UploadInit
@@ -214,6 +215,9 @@ func (f *fakeUploads) ExpireUploads(context.Context, int) ([]repository.ExpiredU
 	return []repository.ExpiredUpload{{ID: "u1", StorageKey: "k", ProviderUploadID: "p"}}, nil
 }
 func (f *fakeUploads) Progress(context.Context, string) (repository.Progress, error) {
+	if f.progress.Moderation != "" {
+		return f.progress, nil
+	}
 	return repository.Progress{Moderation: "ACTIVE"}, nil
 }
 func (f *fakeUploads) GeneratedThumbs(context.Context, string) ([]repository.ThumbRow, error) {
@@ -1067,5 +1071,41 @@ func TestTagSlugAndTitle(t *testing.T) {
 	}
 	if got := titleFromFilename(".mp4"); got != "Untitled" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestStatusExplainsWhyProcessingFailed(t *testing.T) {
+	cases := []struct{ code, want string }{
+		{"too_long", "longer than the maximum allowed length"},
+		{"resolution_too_high", "1080p"},
+		{"unsupported_codec", "codec"},
+		{"cancelled", "Processing was cancelled."},
+		{"", genericProcessingFailure},
+		{"ffmpeg_failed", genericProcessingFailure}, // internal conditions are never described to the client
+		{"scanner_unavailable", genericProcessingFailure},
+		{"blocked_content/../etc", genericProcessingFailure}, // unknown or hostile codes fall back to the generic sentence
+	}
+	for _, c := range cases {
+		db := &fakeUploads{sess: session("COMPLETED", 10), progress: repository.Progress{Moderation: "ACTIVE", FailCode: c.code}}
+		db.sess.VideoStatus = "FAILED"
+		svc, _ := newUploadSvc(db, &fakeStorage{})
+		out, err := svc.Status(context.Background(), testUser, upID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Status != "failed" || out.Error == nil || !strings.Contains(*out.Error, c.want) {
+			t.Errorf("code %q -> %+v, want text containing %q", c.code, out, c.want)
+		}
+	}
+}
+
+func TestEveryWorkerFailureCodeHasAUserText(t *testing.T) {
+	// the permanent codes the worker can write (internal/worker); keep this list in sync with probe/policy.go
+	for _, code := range []string{"too_long", "too_large", "short_too_large", "resolution_too_high", "resolution_too_low", "frame_rate_too_high",
+		"unsupported_container", "unsupported_codec", "no_video_stream", "invalid_file", "invalid_duration", "too_many_streams",
+		"size_mismatch", "original_missing", "cancelled"} {
+		if failureMessage(code) == genericProcessingFailure {
+			t.Errorf("code %q has no specific text", code)
+		}
 	}
 }

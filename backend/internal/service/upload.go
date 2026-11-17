@@ -582,7 +582,7 @@ func (s *Upload) Status(ctx context.Context, p *auth.Principal, uploadID string)
 			}
 		}
 	case u.VideoStatus == "FAILED" || (pr.Failed > 0 && pr.Active == nil):
-		return fail("We couldn't process this video. Try uploading it again.")
+		return fail(failureMessage(pr.FailCode))
 	default:
 		out.Status = "processing"
 		if pr.Active != nil && (*pr.Active == "TRANSCODE" || *pr.Active == "HLS") {

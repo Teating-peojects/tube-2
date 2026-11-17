@@ -10,6 +10,7 @@ type Job struct {
 	ID, VideoID, Type string
 	Attempts          int
 	MaxAttempts       int
+	WaitSec           float64 // how long the job waited in the queue (since scheduled_at) when it was claimed
 }
 
 type VideoRow struct {

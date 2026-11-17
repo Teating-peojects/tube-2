@@ -238,6 +238,9 @@ func TestCancelKillsARunningJob(t *testing.T) {
 	if e.num(`SELECT count(*) FROM video_metadata WHERE video_id = $1::uuid`, vid) != 0 {
 		t.Fatal("results of a cancelled job were stored")
 	}
+	if _, err := os.Stat(pipe.dir(vid)); !os.IsNotExist(err) {
+		t.Fatal("the scratch data of the cancelled video was not removed")
+	}
 }
 
 // The failure code the worker writes is what the status endpoint reads: the whole chain of

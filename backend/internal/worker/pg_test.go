@@ -140,7 +140,7 @@ func claimVideo(ctx context.Context, s *PG, video string) (*Job, error) {
 		panic("qClaim changed: update claimVideo")
 	}
 	var j Job
-	err := s.pool.QueryRow(ctx, q, s.workerID, video).Scan(&j.ID, &j.VideoID, &j.Type, &j.Attempts, &j.MaxAttempts)
+	err := s.pool.QueryRow(ctx, q, s.workerID, video).Scan(&j.ID, &j.VideoID, &j.Type, &j.Attempts, &j.MaxAttempts, &j.WaitSec)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

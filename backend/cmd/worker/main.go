@@ -251,9 +251,22 @@ func run() error {
 
 	if addr := env("METRICS_ADDR", ""); addr != "" {
 		reg := metrics.NewRegistry()
-		w.WithMetrics(worker.NewMetrics(reg, pg))
+		wm := worker.NewMetrics(reg, pg, workDir, conc)
+		w.WithMetrics(wm)
+		pipe.OnTranscoded = wm.Encoded
 		mux := http.NewServeMux()
 		mux.Handle("GET /metrics", reg.Handler())
+		// liveness: the process is up; readiness: the database answers (a worker that cannot reach it cannot claim jobs)
+		mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		mux.HandleFunc("GET /ready", func(rw http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+			defer cancel()
+			if err := pool.Ping(ctx); err != nil {
+				http.Error(rw, "database unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			rw.WriteHeader(http.StatusOK)
+		})
 		ms := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		go func() {
 			if err := ms.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

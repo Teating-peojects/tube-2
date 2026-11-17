@@ -114,6 +114,8 @@ func (w *Worker) loop(ctx context.Context) {
 func (w *Worker) process(parent context.Context, j Job) {
 	log := w.log.With("job", j.ID, "video", j.VideoID, "type", j.Type, "attempt", j.Attempts)
 	start := time.Now()
+	w.met.started(j)
+	defer w.met.finished()
 	log.Info("job started")
 
 	// The job outlives SIGTERM for ShutdownGrace, then it is cancelled and handed back.
@@ -162,6 +164,7 @@ func (w *Worker) process(parent context.Context, j Job) {
 	case lost.Load() || errors.Is(err, ErrLeaseLost):
 		w.met.observe(j, "lease_lost", time.Since(start))
 		log.Warn("job lease lost, result dropped")
+		w.dropScratchIfCancelled(bg, j)
 	case errors.Is(err, context.Canceled):
 		w.met.observe(j, "released", time.Since(start))
 		if rerr := w.store.Release(bg, j); rerr != nil {
@@ -171,6 +174,7 @@ func (w *Worker) process(parent context.Context, j Job) {
 		}
 	default:
 		je := asJobError(err)
+		w.met.failure(je)
 		res, ferr := w.store.Fail(bg, j, je)
 		switch {
 		case errors.Is(ferr, ErrLeaseLost):
@@ -253,5 +257,15 @@ func (w *Worker) cleanupFailed(ctx context.Context) {
 		}
 		w.log.Info("removed partial output of a failed video", "video", id)
 		w.met.cleanup("ok")
+	}
+}
+
+// dropScratchIfCancelled removes the scratch directory of a video that was cancelled, deleted or removed
+// while this worker held its job. When the lease was lost for another reason (a presumed-dead worker whose job
+// was re-queued) the video is still PROCESSING and the directory is left alone: another worker may be using it.
+func (w *Worker) dropScratchIfCancelled(ctx context.Context, j Job) {
+	v, err := w.store.Video(ctx, j.VideoID)
+	if errors.Is(err, ErrVideoGone) || (err == nil && (v.Status != "PROCESSING" || v.Moderation == "REMOVED")) {
+		_ = os.RemoveAll(w.pipe.dir(j.VideoID))
 	}
 }

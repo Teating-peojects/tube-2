@@ -40,6 +40,8 @@ type Pipeline struct {
 	Profile Profile
 	// Free reports free scratch bytes (default: statfs); tests replace it.
 	Free func(dir string) (uint64, error)
+	// OnTranscoded reports TRANSCODE throughput (optional): seconds of source video and the wall time taken.
+	OnTranscoded func(mediaSec float64, elapsed time.Duration)
 	// Notify pushes a realtime event after a commit (optional).
 	Notify func(ctx context.Context, userID, videoID string)
 }
@@ -301,6 +303,7 @@ func (p *Pipeline) transcode(ctx context.Context, j Job, v VideoRow) error {
 		return err
 	}
 	prof := p.profile()
+	began := time.Now()
 	pr := Probe{Width: meta.Width, Height: meta.Height, FPS: meta.FPS, HasAudio: meta.HasAudio}
 	// Start from a clean prefix: a previous failed attempt may have left segments behind.
 	if _, err := p.Storage.DeletePrefix(ctx, "hls/"+j.VideoID+"/"); err != nil {
@@ -329,7 +332,13 @@ func (p *Pipeline) transcode(ctx context.Context, j Job, v VideoRow) error {
 		}
 		_ = os.RemoveAll(out) // free the disk before the next rendition
 	}
-	return p.Store.FinishTranscode(ctx, j)
+	if err := p.Store.FinishTranscode(ctx, j); err != nil {
+		return err
+	}
+	if p.OnTranscoded != nil {
+		p.OnTranscoded(float64(meta.Duration), time.Since(began))
+	}
+	return nil
 }
 
 func asJobErrorCtx(ctx context.Context, err error) error {

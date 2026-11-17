@@ -28,7 +28,8 @@ SET status = 'PROCESSING', attempts = j.attempts + 1, worker_id = $1, started_at
 WHERE j.id = (SELECT q.id FROM video_processing_jobs q
               WHERE q.status = 'QUEUED' AND q.scheduled_at <= now() AND q.attempts < q.max_attempts
               ORDER BY q.scheduled_at, q.created_at FOR UPDATE SKIP LOCKED LIMIT 1)
-RETURNING j.id::text, j.video_id::text, j.job_type::text, j.attempts::int, j.max_attempts::int`
+RETURNING j.id::text, j.video_id::text, j.job_type::text, j.attempts::int, j.max_attempts::int,
+  GREATEST(EXTRACT(EPOCH FROM (now() - j.scheduled_at)), 0)::float8`
 
 	qHeartbeat = `UPDATE video_processing_jobs SET heartbeat_at = now() WHERE id = $1::uuid AND worker_id = $2 AND status = 'PROCESSING'`
 	qRelease   = `UPDATE video_processing_jobs SET status = 'QUEUED', attempts = GREATEST(attempts - 1, 0), worker_id = NULL,
@@ -93,7 +94,7 @@ WHERE id = $1::uuid AND status = 'PROCESSING' AND deleted_at IS NULL AND moderat
 
 func (s *PG) Claim(ctx context.Context) (*Job, error) {
 	var j Job
-	err := s.pool.QueryRow(ctx, qClaim, s.workerID).Scan(&j.ID, &j.VideoID, &j.Type, &j.Attempts, &j.MaxAttempts)
+	err := s.pool.QueryRow(ctx, qClaim, s.workerID).Scan(&j.ID, &j.VideoID, &j.Type, &j.Attempts, &j.MaxAttempts, &j.WaitSec)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

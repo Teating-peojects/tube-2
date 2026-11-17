@@ -121,3 +121,6 @@ Phase 5 overall: still **PARTIALLY COMPLETE** (HTTP-level and MinIO integration 
 | 5.4 cancel | IMPLEMENTED (unit) | a 500 on cancelling a completed upload fixed; its queued job is now closed |
 | F1, F2 (CI scripts) | open | fixed |
 Phase 5 overall: **PARTIALLY COMPLETE**. Open: OpenAPI, run on real MinIO, Playwright e2e, metrics endpoint, bucket lifecycle rule, B6/B7.
+
+## 10. Final status (Phase G, 2026-11-14)
+Superseded by `PHASE_5_COMPLETION_REPORT.md`, which carries the final per-requirement labels. Changes in this phase: 13 OpenAPI -> COMPLETE (validated, drift-tested); 18 documentation -> COMPLETE; assets, draft metadata and publish are now verified over HTTP (before: unit tests only); a missing `ETag` in the browser is diagnosed instead of looping. Phase 5 overall: **PARTIALLY COMPLETE**.

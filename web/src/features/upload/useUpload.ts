@@ -20,6 +20,7 @@ export function classify(e: unknown): Failure {
   const status = e instanceof ApiError ? e.status : undefined;
   if (e instanceof UploadError && e.code === "network") return { message: "Connection lost. Retry to continue where you left off.", next: "resume", network: true };
   if (e instanceof ApiError && (e.status === 0 || code === "network")) return { message: "Connection lost. Retry to continue where you left off.", next: "resume", network: true };
+  if (e instanceof UploadError && e.code === "no_etag") return { message: "Uploads are not set up correctly on the server (storage CORS). Please try again later.", next: "resume", network: false };
   // The server looked at the finished upload and refused it; the session is closed, so the file has to change.
   if (code === "invalid_file") return { message: "This file couldn’t be read as a video. Choose another file.", next: "never", network: false };
   if (code === "size_mismatch") return { message: "The upload arrived incomplete. Retry to upload it again.", next: "restart", network: false };

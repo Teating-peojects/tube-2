@@ -43,7 +43,7 @@ that must change in `backend/` or `web/` (they must compile into those modules).
   this sandbox (no Docker/MinIO): it will be written, and its status reported as NOT RUN unless you run it.
 - Cleanup and failed-upload recovery tests.
 
-## Phase G — OpenAPI, docs, completion report
+## Phase G — OpenAPI, docs, completion report  (status: DONE, see PHASE_5_COMPLETION_REPORT.md)
 - `storage/openapi.yaml` for the upload endpoints (existing paths), plus the remaining `PHASE_5_*` documents
   (architecture, API, security, testing, deployment) and `PHASE_5_COMPLETION_REPORT.md` with honest labels.
 - Housekeeping findings F1-F3 (exec bits, test-db.sh stdout, doc counts) are proposed as a separate small change.

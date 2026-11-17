@@ -13,14 +13,14 @@ The HTTP tests use `handler/memstore_test.go`, an in-memory store with S3 multip
 checks ETags and assembles the object, a closed upload answers 404 `NoSuchUpload`). The test plays the browser: it PUTs each
 part to the presigned URL it was given, then calls `complete`.
 
-## HTTP scenarios (17 tests incl. subtests)
+## HTTP scenarios (24 tests incl. subtests; 17 in Phase F, 7 in Phase G)
 Access control (anonymous 401, unverified 403, cross-site request refused, strangers get 404 on status/complete/retry/abort) ·
 init validation (extension incl. `.avi` refused, size, per-user cap of 5 open uploads) · happy path (3 parts, object bytes and
 content type, exactly one processing job, repeated complete is idempotent, finished upload not retryable) · refused file (not a
 video -> `invalid_file`, upload closed, file deleted, sweeper frees all three prefixes) · a short part is caught and can be sent
 again · wrong part lists (`validation_failed` / `parts_mismatch`, upload stays open) · storage outage while verifying (5xx
 `storage_unavailable`, not poisoned) · retry of an expired upload (same ids, new URLs, old URL answers 4xx, budget 3, window 7 days,
-finalized by the sweeper) · cancel of an open and of a completed upload · slot freed by a cancel · `/ready` with storage.
+finalized by the sweeper) · cancel of an open and of a completed upload · slot freed by a cancel · `/ready` with storage · (Phase G) thumbnails and captions (types, sizes, limits, closed upload), draft metadata (normalization, every refusal, ownership), publish (never by itself; consent, category, `READY` required; consent row, audit row, hashed IP; double publish; cancel of a published video refused), publish-time checks of the uploaded files. A separate contract test keeps `storage/openapi.yaml` and the code in step.
 
 ## Bugs these tests found (all fixed in this phase)
 1. **`AbortMultipart` failed on `404 NoSuchUpload`.** Aborting an upload that was already aborted or completed is an error on

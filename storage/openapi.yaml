@@ -1,0 +1,373 @@
+openapi: 3.0.3
+info:
+  title: REDXTUBE upload API (Phase 5)
+  version: 1.0.0
+  description: |
+    Direct-to-storage video upload: the browser asks for presigned part URLs, PUTs the file to object storage
+    itself, then asks the API to verify and complete it. A completed upload waits for the (future) processing worker;
+    nothing is published by itself.
+
+    **Authentication.** A session cookie (`xh_session` by default) of a signed-in user with a verified email.
+    State-changing requests with a browser `Origin` header must come from an allowed origin (`csrf_blocked`).
+    **Errors** share one shape (`Error`); `code` is stable and machine-readable, `message` is for people.
+
+    Verified against the implementation: `backend/internal/handler/upload_http_*_integration_test.go` (real router,
+    PostgreSQL, in-memory S3-like store). `backend/internal/handler/openapi_contract_test.go` fails when a route or an
+    error code documented here disappears from the code.
+servers:
+  - url: /
+tags:
+  - name: upload
+  - name: draft
+  - name: ops
+security:
+  - sessionCookie: []
+paths:
+  /api/v1/upload/init:
+    post:
+      tags: [upload]
+      operationId: initUpload
+      summary: Start an upload
+      description: |
+        Validates the file description, creates a private draft video and a multipart upload, and returns one presigned
+        PUT URL per part. Allowed extensions: `.mp4 .m4v .mov .mkv .webm`, 1 byte to 5 GiB (configurable lower).
+        At most 5 unfinished uploads per user and 10 inits per hour.
+      x-error-codes: [unauthorized, verification_required, csrf_blocked, validation_failed, limit_reached, rate_limited, storage_unavailable, uploads_disabled]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InitRequest' }
+      responses:
+        '201':
+          description: Upload created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadInit' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '502': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/upload/{id}/complete:
+    post:
+      tags: [upload]
+      operationId: completeUpload
+      summary: Finish an upload
+      description: |
+        Send the list of parts the browser uploaded (number and the ETag storage returned). The server checks the list
+        against what storage received (`ListParts`), assembles the object, checks size and file signature, then queues the
+        video for processing. Repeating the call after success is harmless (204 again, one job). A damaged or missing
+        part (`parts_mismatch`) or a storage outage leaves the upload open so the browser can fix it and call again; a
+        file that is not a video (`invalid_file`) closes the upload and deletes the file.
+      x-error-codes: [unauthorized, verification_required, csrf_blocked, upload_not_found, upload_in_progress, upload_closed, validation_failed, parts_mismatch, size_mismatch, invalid_file, rate_limited, storage_unavailable, uploads_disabled]
+      parameters: [{ $ref: '#/components/parameters/UploadId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompleteRequest' }
+      responses:
+        '204': { description: The upload is complete and queued for processing. }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '502': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/upload/{id}/status:
+    get:
+      tags: [upload]
+      operationId: uploadStatus
+      summary: Processing status of an upload
+      description: |
+        `failed` with `retryable: true` means the upload expired before it was finished and can be reopened with
+        `POST /upload/{id}/retry` (limited number of times, and only for a limited time after the deadline).
+        A cancelled, rejected or finalized upload is `failed` without `retryable`.
+      x-error-codes: [unauthorized, verification_required, upload_not_found]
+      parameters: [{ $ref: '#/components/parameters/UploadId' }]
+      responses:
+        '200':
+          description: Current status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadStatus' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/v1/upload/{id}/retry:
+    post:
+      tags: [upload]
+      operationId: retryUpload
+      summary: Reopen an expired upload
+      description: |
+        Only for an upload whose session expired before completion. Same `uploadId` and `videoId`, a fresh multipart
+        upload and new part URLs; every part must be uploaded again. At most 3 reopenings per upload
+        (`UPLOAD_MAX_RETRIES`), within 7 days of the deadline (`UPLOAD_EXPIRED_RETENTION`), 20 per hour.
+      x-error-codes: [unauthorized, verification_required, csrf_blocked, upload_not_found, upload_active, not_retryable, retry_limit, limit_reached, rate_limited, storage_unavailable, uploads_disabled]
+      parameters: [{ $ref: '#/components/parameters/UploadId' }]
+      responses:
+        '200':
+          description: Reopened. Same shape as the init response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadInit' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '502': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/upload/{id}:
+    delete:
+      tags: [upload]
+      operationId: cancelUpload
+      summary: Cancel an upload
+      description: |
+        Aborts the multipart upload, deletes the file and discards the unpublished draft (a queued processing job is
+        closed). Cancelling twice is harmless. A published video cannot be cancelled this way.
+      x-error-codes: [unauthorized, verification_required, csrf_blocked, upload_not_found, already_published]
+      parameters: [{ $ref: '#/components/parameters/UploadId' }]
+      responses:
+        '204': { description: Cancelled. }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/v1/upload/{id}/assets:
+    post:
+      tags: [draft]
+      operationId: createAsset
+      summary: Presigned URL for a custom thumbnail or a caption file
+      description: |
+        The browser PUTs the file to `url` (valid 30 minutes). Thumbnails: JPG, PNG or WebP up to 2 MB, at most 10.
+        Captions: `.vtt` or `.srt` up to 1 MB, one per language, at most 12 languages. The content is checked when the
+        video is published.
+      x-error-codes: [unauthorized, verification_required, csrf_blocked, upload_not_found, upload_closed, validation_failed, limit_reached, rate_limited, uploads_disabled]
+      parameters: [{ $ref: '#/components/parameters/UploadId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssetRequest' }
+      responses:
+        '201':
+          description: Created.
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetInit' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/videos/{id}/metadata:
+    patch:
+      tags: [draft]
+      operationId: saveDraft
+      summary: Save draft metadata
+      description: Every field is optional; only the fields sent change. Only the owner can edit a video.
+      x-error-codes: [unauthorized, verification_required, csrf_blocked, video_not_found, validation_failed, rate_limited]
+      parameters: [{ $ref: '#/components/parameters/VideoId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MetaInput' }
+      responses:
+        '204': { description: Saved. }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/videos/{id}/publish:
+    post:
+      tags: [draft]
+      operationId: publishVideo
+      summary: Publish a processed video
+      description: |
+        The only way a video becomes visible. Requires the owner's explicit consent declaration (`consent: true`, stored
+        with the statement version and a hashed IP), a category, and a video that is `READY` (processed). The checked
+        thumbnail and caption files are validated here; a refused asset leaves the video unpublished.
+      x-error-codes: [unauthorized, verification_required, csrf_blocked, video_not_found, validation_failed, not_ready, already_published, video_removed, file_too_large_for_short, rate_limited, storage_unavailable, uploads_disabled]
+      parameters: [{ $ref: '#/components/parameters/VideoId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MetaInput' }
+      responses:
+        '204': { description: Published. }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '502': { $ref: '#/components/responses/Error' }
+  /ready:
+    get:
+      tags: [ops]
+      operationId: ready
+      summary: Readiness
+      description: |
+        PostgreSQL and Redis are required (503 if either is down). Object storage is optional: when it is configured and
+        unreachable the answer stays 200 and lists it under `degraded`. Error details are logged, never returned.
+      security: []
+      responses:
+        '200':
+          description: Ready (possibly degraded).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ready' }
+        '503':
+          description: A required dependency is down.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ready' }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: xh_session
+      description: Session cookie (name configurable with SESSION_COOKIE_NAME).
+  parameters:
+    UploadId:
+      name: id
+      in: path
+      required: true
+      description: Upload id. Another user's upload answers 404, as if it did not exist.
+      schema: { type: string, format: uuid }
+    VideoId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Error:
+      description: Error. See the operation's `x-error-codes`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Too many requests.
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds until the next attempt is allowed. }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: validation_failed }
+        message: { type: string }
+        fields:
+          type: object
+          additionalProperties: { type: string }
+          description: Per-field messages for `validation_failed`.
+    InitRequest:
+      type: object
+      required: [filename, size]
+      properties:
+        filename: { type: string, example: clip.mp4 }
+        size: { type: integer, format: int64, minimum: 1, maximum: 5368709120 }
+        contentType: { type: string, example: video/mp4 }
+    UploadPart:
+      type: object
+      required: [partNumber, url]
+      properties:
+        partNumber: { type: integer, minimum: 1 }
+        url: { type: string, description: 'Presigned PUT URL for this part. Send the bytes of the part, nothing else.' }
+    UploadInit:
+      type: object
+      required: [uploadId, videoId, partSize, parts]
+      properties:
+        uploadId: { type: string, format: uuid }
+        videoId: { type: string, format: uuid }
+        partSize: { type: integer, format: int64, description: Bytes per part; the last part is shorter. }
+        parts:
+          type: array
+          items: { $ref: '#/components/schemas/UploadPart' }
+    CompleteRequest:
+      type: object
+      required: [parts]
+      properties:
+        parts:
+          type: array
+          description: One entry per part, numbered from 1, with the ETag (without quotes) storage returned for it.
+          items:
+            type: object
+            required: [partNumber, etag]
+            properties:
+              partNumber: { type: integer, minimum: 1 }
+              etag: { type: string }
+    UploadStatus:
+      type: object
+      required: [status, progress, thumbnails]
+      properties:
+        status: { type: string, enum: [processing, encoding, ready, published, failed] }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        thumbnails: { type: array, items: { type: string } }
+        error: { type: string }
+        retryable: { type: boolean, description: Present (true) only for an expired upload that can be reopened. }
+    AssetRequest:
+      type: object
+      required: [kind, contentType, size]
+      properties:
+        kind: { type: string, enum: [thumbnail, caption] }
+        contentType: { type: string, example: image/png, description: 'image/jpeg, image/png, image/webp, text/vtt or application/x-subrip' }
+        size: { type: integer, format: int64, minimum: 1 }
+        lang: { type: string, example: bn, description: Required for captions. }
+    AssetInit:
+      type: object
+      required: [assetId, url]
+      properties:
+        assetId: { type: string, format: uuid }
+        url: { type: string, description: Presigned PUT URL (valid 30 minutes). }
+    MetaInput:
+      type: object
+      properties:
+        title: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, maxLength: 5000 }
+        category: { type: string, description: Category name or slug. }
+        tags: { type: array, maxItems: 15, items: { type: string, minLength: 1, maxLength: 30 } }
+        visibility: { type: string, enum: [public, unlisted, private] }
+        comments: { type: string, enum: ['on', 'off', review] }
+        language: { type: string, example: bn }
+        ageGate: { type: boolean }
+        thumbnail: { type: string, description: Id of a custom thumbnail (from /assets) or of a generated one. }
+        captions:
+          type: array
+          items:
+            type: object
+            required: [lang, assetId]
+            properties:
+              lang: { type: string }
+              assetId: { type: string, format: uuid }
+        consent:
+          type: boolean
+          description: Publish only. Must be true; confirms everyone in the video is 18+ and consented and the uploader holds the rights.
+    Ready:
+      type: object
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ok, unavailable] }
+        checks:
+          type: object
+          additionalProperties: { type: string, enum: [ok, error] }
+        degraded:
+          type: array
+          items: { type: string }
+          description: Optional dependencies that failed (for example `storage`). Absent when none did.

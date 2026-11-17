@@ -1,0 +1,25 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+ RUN  v2.1.9 /tmp/web
+
+ ✓ src/features/upload/useUpload.test.tsx (21 tests) 1302ms
+ ✓ src/lib/uploader.test.ts (25 tests) 44ms
+ ✓ src/features/upload/UploadProgress.test.tsx (8 tests) 375ms
+ ✓ src/features/auth/schemas.test.ts (14 tests) 7ms
+ ✓ src/config/upload.test.ts (4 tests) 7ms
+ ✓ src/components/ui/Modal.test.tsx (4 tests) 157ms
+ ✓ src/features/upload/TagInput.test.tsx (3 tests) 407ms
+   ✓ TagInput > adds tags with Enter and comma, normalising them 315ms
+ ✓ src/lib/auth.test.ts (11 tests) 5ms
+ ✓ src/store/modal.test.ts (3 tests) 4ms
+ ✓ src/features/auth/errors.test.ts (3 tests) 2ms
+ ✓ src/store/toast.test.ts (3 tests) 6ms
+ ✓ src/utils/format.test.ts (5 tests) 18ms
+ ✓ src/lib/search-params.test.ts (3 tests) 5ms
+ ✓ src/components/ui/Toggle.test.tsx (1 test) 99ms
+
+ Test Files  14 passed (14)
+      Tests  108 passed (108)
+   Start at  20:06:35
+   Duration  17.52s (transform 480ms, setup 1.18s, collect 4.90s, tests 2.44s, environment 5.74s, prepare 1.02s)
+

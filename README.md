@@ -141,3 +141,6 @@ Handler -> Service -> Repository -> Database. No business logic in handlers.
 | B8 Notifications + Studio + realtime | done: inbox, unread count, Studio overview/analytics/videos/comments, WebSocket over Redis pub/sub |
 | B9 Moderation + admin | done (API only, no UI): report queue, actions, restore, users, audit, hash blocklist, auto-restrict |
 | B10 Hardening | partly: upload verification, consent, hash blocklist trigger, suspension expiry, CI for Go. Still open: worker sandboxing, malware/CSAM scanning integration, load tests |
+
+## Upload and storage (Phase 5)
+Design, API, security, deployment and the completion report are in [`storage/`](storage/README.md); the machine-readable API is [`storage/openapi.yaml`](storage/openapi.yaml).

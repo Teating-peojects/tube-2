@@ -179,6 +179,20 @@ services:
       FFMPEG_THREADS: ${FFMPEG_THREADS:-0}
       SCANNER_COMMAND: ${SCANNER_COMMAND:-}
       METRICS_ADDR: ${WORKER_METRICS_ADDR:-}
+      # Phase 6 limits and encoding profile: empty means the built-in default (see .env.example)
+      WORKER_MAX_DURATION_SECONDS: ${WORKER_MAX_DURATION_SECONDS:-}
+      WORKER_MAX_SHORT_SIDE: ${WORKER_MAX_SHORT_SIDE:-}
+      WORKER_MAX_LONG_SIDE: ${WORKER_MAX_LONG_SIDE:-}
+      WORKER_MAX_FPS: ${WORKER_MAX_FPS:-}
+      WORKER_MAX_STREAMS: ${WORKER_MAX_STREAMS:-}
+      WORKER_MIN_FREE_MB: ${WORKER_MIN_FREE_MB:-}
+      FFMPEG_PRESET: ${FFMPEG_PRESET:-}
+      WORKER_SEGMENT_SECONDS: ${WORKER_SEGMENT_SECONDS:-}
+      WORKER_AUDIO_KBPS: ${WORKER_AUDIO_KBPS:-}
+      WORKER_THUMBNAILS: ${WORKER_THUMBNAILS:-}
+      WORKER_LADDER: ${WORKER_LADDER:-}
+      WORKER_PROFILE_VERSION: ${WORKER_PROFILE_VERSION:-}
+      WORKER_FAILED_OUTPUT_RETENTION: ${WORKER_FAILED_OUTPUT_RETENTION:-}
     depends_on:
       redis: { condition: service_healthy }
       reference-data: { condition: service_completed_successfully }

@@ -16,7 +16,8 @@ Evidence for each fact: `B6_AUDIT.md`. No product code exists yet.
 `video_jobs_queue`, setting `status='PROCESSING'`, `worker_id`, `started_at`, `heartbeat_at`, `attempts+1`.
 
 **Lease.** Worker refreshes `heartbeat_at` every N seconds (config). A recovery step re-queues `PROCESSING` rows whose heartbeat is older than the lease
-(`video_jobs_stale`), without consuming an extra attempt if the worker died, and a fenced `Complete/Fail` (`WHERE worker_id=$me AND status='PROCESSING'`) so a
+(`video_jobs_stale`). **A crash keeps the attempt that the claim consumed** (so a poison job that kills its worker cannot loop forever; corrected in B6.2,
+the first draft said otherwise); only a graceful shutdown `Release` refunds it. Completion and failure are fenced `Complete/Fail` (`WHERE worker_id=$me AND status='PROCESSING'`) so a
 revived stale worker cannot overwrite a newer claim.
 
 **Retry.** Transient failure: `status='QUEUED'`, `scheduled_at = now + backoff(attempts) + jitter`; at `max_attempts` -> `FAILED`. Permanent failure

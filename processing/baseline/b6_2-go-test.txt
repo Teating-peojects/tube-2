@@ -1,0 +1,81 @@
+# B6.2 go test -race -v ./... (PostgreSQL 16 + Redis 7.0, TEST_* set), 2026-11-19, two consecutive runs
+run 1: PASS 274 FAIL 0 SKIP 10
+run 2: PASS 274 FAIL 0 SKIP 10
+
+ok  	github.com/redxtube/api/internal/auth	1.796s
+ok  	github.com/redxtube/api/internal/captions	1.012s
+ok  	github.com/redxtube/api/internal/config	1.016s
+ok  	github.com/redxtube/api/internal/handler	32.686s
+ok  	github.com/redxtube/api/internal/httpx	1.014s
+ok  	github.com/redxtube/api/internal/mail	1.075s
+ok  	github.com/redxtube/api/internal/media	1.011s
+ok  	github.com/redxtube/api/internal/metrics	1.014s
+ok  	github.com/redxtube/api/internal/pagination	1.010s
+ok  	github.com/redxtube/api/internal/playback	1.012s
+ok  	github.com/redxtube/api/internal/processing	10.390s
+ok  	github.com/redxtube/api/internal/ratelimit	1.381s
+ok  	github.com/redxtube/api/internal/server	1.016s
+ok  	github.com/redxtube/api/internal/service	1.025s
+ok  	github.com/redxtube/api/internal/storage	3.741s
+ok  	github.com/redxtube/api/internal/ws	1.829s
+
+## internal/processing tests (run 2)
+--- PASS: TestUploadHTTPRecoverableCompleteFailures (1.08s)
+--- PASS: TestUploadHTTPRetryOfAnExpiredUpload (0.83s)
+--- PASS: TestUploadHTTPCancel (0.57s)
+--- PASS: TestUploadRetryAgainstRealDatabase (0.28s)
+--- PASS: TestRateLimitedSetsRetryAfter (0.00s)
+--- PASS: TestAsyncGivesUpAndSkipsPermanentErrors (0.00s)
+--- PASS: TestTransitionTableAllowsExactlyTheDocumentedMoves (0.00s)
+--- PASS: TestBackoffGrowsExponentiallyAndIsCapped (0.00s)
+--- PASS: TestBackoffJitterAndFloor (0.00s)
+--- PASS: TestClaimOnlyTakesRunnableJobs (0.25s)
+--- PASS: TestTenClaimersNeverShareAJob (0.70s)
+--- PASS: TestTwoClaimersOneJobExactlyOneWins (0.32s)
+--- PASS: TestHeartbeatRecordsProgressAndIsFenced (0.21s)
+--- PASS: TestCompleteIsIdempotentAndFenced (0.21s)
+--- PASS: TestRetryBackoffAndTheAttemptBudget (0.20s)
+--- PASS: TestPermanentFailureAndSafeCodes (0.20s)
+--- PASS: TestStaleLeaseRecoveryAndFencing (0.20s)
+--- PASS: TestCancel (0.22s)
+--- PASS: TestReleaseRefundsTheAttempt (0.19s)
+--- PASS: TestFailOrphans (0.21s)
+--- PASS: TestClaimDoesNotWaitForARowThatAnotherTransactionHolds (0.25s)
+--- PASS: TestTwoRunnersDrainTheQueueExactlyOnce (0.56s)
+--- PASS: TestRunnerRecoversAJobOfAKilledWorker (0.31s)
+--- PASS: TestRunnerRetriesTransientErrorsUntilTheBudgetIsUsed (2.35s)
+--- PASS: TestRunnerPermanentErrorFailsAtOnceWithItsSafeCode (0.33s)
+--- PASS: TestRunnerSurvivesAPanic (1.36s)
+--- PASS: TestGracefulShutdownReleasesARunningJob (0.47s)
+--- PASS: TestRunnerStopsAJobWhenCancellationIsRequested (0.41s)
+--- PASS: TestRunnerAbandonsAJobWhoseLeaseWasLost (0.41s)
+--- PASS: TestRetryReopensAnExpiredUpload (0.00s)
+--- PASS: TestRetryOnlyForExpiredUploads (0.00s)
+--- PASS: TestRetryBudget (0.00s)
+--- PASS: TestRetryLosesTheRaceAndCleansUp (0.00s)
+--- PASS: TestRetryNeedsStorageAndRespectsCaps (0.00s)
+--- PASS: TestStatusMarksExpiredUploadsRetryable (0.00s)
+--- PASS: TestRetryWindow (0.00s)
+--- PASS: TestCompleteHappyPath (0.00s)
+--- PASS: TestCompleteIsIdempotent (0.00s)
+--- PASS: TestCompletePartsMismatch (0.00s)
+--- PASS: TestCompleteRejectsBadPartList (0.00s)
+--- PASS: TestCompleteRejectsNonVideoAndSizeMismatch (0.00s)
+--- PASS: TestCompleteInProgressAndClosed (0.00s)
+--- PASS: TestExpireStaleAbortsMultipart (0.00s)
+--- SKIP: TestS3CompleteRefusesAWrongETag (0.00s)
+--- PASS: TestCompleteMultipartDetectsErrorInsideOK (0.00s)
+
+## skipped tests (same 10 as before B6.2)
+--- SKIP: TestOpenAPIRoutesMatchTheHandler
+--- SKIP: TestOpenAPIErrorCodesMatchTheCode
+--- SKIP: TestS3PingChecksTheBucket
+--- SKIP: TestS3MultipartLifecycle
+--- SKIP: TestS3CompleteRefusesAWrongETag
+--- SKIP: TestS3AbortIsIdempotent
+--- SKIP: TestS3AbortedUploadRejectsParts
+--- SKIP: TestS3ExpiredPresignedURLAnswers403
+--- SKIP: TestS3RejectsWrongCredentials
+--- SKIP: TestS3ObjectsAndPrefixDeletion
+
+## baseline before B6.2 (251 PASS / 0 FAIL / 10 SKIP)

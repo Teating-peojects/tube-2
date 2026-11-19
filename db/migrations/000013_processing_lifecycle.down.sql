@@ -1,0 +1,10 @@
+ALTER TABLE video_processing_jobs
+  DROP CONSTRAINT video_jobs_error_code,
+  DROP CONSTRAINT video_jobs_progress,
+  DROP CONSTRAINT video_jobs_stage,
+  DROP CONSTRAINT video_jobs_version,
+  DROP COLUMN cancel_requested_at,
+  DROP COLUMN error_code,
+  DROP COLUMN progress,
+  DROP COLUMN stage,
+  DROP COLUMN processing_version;

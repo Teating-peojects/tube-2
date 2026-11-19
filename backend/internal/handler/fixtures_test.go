@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -50,6 +51,9 @@ func mustTestDB(t *testing.T, dsn string) {
 	}
 }
 
+// dbLockHeld records the tests that already hold the shared database lock.
+var dbLockHeld sync.Map
+
 func setup(t *testing.T) *env {
 	t.Helper()
 	appDSN := os.Getenv("TEST_DATABASE_URL")
@@ -73,6 +77,24 @@ func setup(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(app.Close)
+
+	// Packages share this database and `go test ./...` runs them in parallel: internal/processing also holds this
+	// advisory lock for the length of each of its tests, so a wipe here can never delete rows under another package.
+	// Some tests call setup twice; the lock is taken once per test (a second session would wait for the first forever).
+	if _, held := dbLockHeld.LoadOrStore(t, struct{}{}); !held {
+		lockConn, err := admin.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := lockConn.Exec(ctx, `SELECT pg_advisory_lock(746100)`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = lockConn.Exec(context.Background(), `SELECT pg_advisory_unlock(746100)`)
+			lockConn.Release()
+			dbLockHeld.Delete(t)
+		})
+	}
 
 	// Wipe everything except reference data. audit_logs and moderation_actions are
 	// append-only (a trigger blocks TRUNCATE), so triggers are bypassed for the wipe.

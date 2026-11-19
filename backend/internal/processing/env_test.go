@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +35,9 @@ type tenv struct {
 	store *processing.Store
 }
 
+// lockHeld records the tests that already hold the shared database lock.
+var lockHeld sync.Map
+
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func setup(t *testing.T) *tenv {
@@ -53,18 +57,22 @@ func setup(t *testing.T) *tenv {
 	}
 	t.Cleanup(admin.Close)
 
-	// Same advisory lock as internal/handler: packages share this database and run in parallel.
-	lock, err := admin.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
+	// Same advisory lock as internal/handler: packages share this database and run in parallel. Taken once per test
+	// (a test that calls setup twice would otherwise wait for its own lock forever).
+	if _, held := lockHeld.LoadOrStore(t, struct{}{}); !held {
+		lock, err := admin.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := lock.Exec(ctx, `SELECT pg_advisory_lock(746100)`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = lock.Exec(context.Background(), `SELECT pg_advisory_unlock(746100)`)
+			lock.Release()
+			lockHeld.Delete(t)
+		})
 	}
-	if _, err := lock.Exec(ctx, `SELECT pg_advisory_lock(746100)`); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = lock.Exec(context.Background(), `SELECT pg_advisory_unlock(746100)`)
-		lock.Release()
-	})
 
 	conn, err := admin.Acquire(ctx)
 	if err != nil {

@@ -1,0 +1,86 @@
+# B6.3 go test -race -v ./... (PostgreSQL 16 + Redis 7.0 + ffmpeg 6.1.1, TEST_* set), 2026-11-19, two consecutive runs
+run 1: PASS 322 FAIL 0 SKIP 10
+run 2: PASS 322 FAIL 0 SKIP 10
+
+ok  	github.com/redxtube/api/internal/auth	1.682s
+ok  	github.com/redxtube/api/internal/captions	1.009s
+ok  	github.com/redxtube/api/internal/config	1.012s
+ok  	github.com/redxtube/api/internal/handler	26.675s
+ok  	github.com/redxtube/api/internal/httpx	1.011s
+ok  	github.com/redxtube/api/internal/mail	1.070s
+ok  	github.com/redxtube/api/internal/media	1.008s
+ok  	github.com/redxtube/api/internal/metrics	1.012s
+ok  	github.com/redxtube/api/internal/pagination	1.008s
+ok  	github.com/redxtube/api/internal/playback	1.010s
+ok  	github.com/redxtube/api/internal/processing	12.995s
+ok  	github.com/redxtube/api/internal/processing/inspect	6.814s
+ok  	github.com/redxtube/api/internal/ratelimit	1.380s
+ok  	github.com/redxtube/api/internal/server	1.014s
+ok  	github.com/redxtube/api/internal/service	1.020s
+ok  	github.com/redxtube/api/internal/storage	3.735s
+ok  	github.com/redxtube/api/internal/ws	1.819s
+
+## internal/processing/inspect (run 2)
+--- PASS: TestVerifyRejectsMalformedAndHostileHashes (0.01s)
+--- PASS: TestSecretsNeverAppearInLogs (0.25s)
+--- PASS: TestSearchHostileInput (0.24s)
+--- PASS: TestChannelPlaylistsOnlyPublicWithPublicCounts (0.19s)
+--- PASS: TestPlaylistsLifecycle (0.34s)
+--- PASS: TestMetadataStopsForGoneVideosAndMissingTools (0.31s)
+--- PASS: TestTheInspectedFileHasNoExtensionAndPrivatePermissions (0.20s)
+--- PASS: TestParseStandardFile (0.00s)
+--- PASS: TestParseRotationFromSideDataAndTag (0.00s)
+--- PASS: TestParseSampleAspectRatio (0.00s)
+--- PASS: TestParseFrameRateFallbacks (0.00s)
+--- PASS: TestParseCoverArtIsNotAVideoStreamAndDurationFallback (0.00s)
+--- PASS: TestParseToleratesJunkValues (0.00s)
+--- PASS: TestVideoTypeUsesTheSameIntegerAsTheDatabase (0.00s)
+--- PASS: TestEveryCodeIsSafeForTheDatabaseAndHasAFixedMessage (0.00s)
+--- PASS: TestSanitize (0.00s)
+--- PASS: TestPolicyAcceptsAGoodFileAndTheEdges (0.00s)
+--- PASS: TestPolicyRefusalsAndTheirCodes (0.00s)
+--- PASS: TestPolicyIsConfigurable (0.00s)
+--- PASS: TestFixturesThatMustBeAccepted (2.32s)
+--- PASS: TestExtensionLiesDoNotMatterBecauseContentDecides (0.11s)
+--- PASS: TestFixturesThatMustBeRefusedWithTheRightCode (0.67s)
+--- PASS: TestDurationAndSizeLimitsApplyToRealFiles (0.04s)
+--- PASS: TestHostileFileNameCannotRunAnything (0.04s)
+--- PASS: TestPlaylistsCannotReachOtherFilesOrTheNetwork (0.11s)
+--- PASS: TestRejectionDetailIsSanitised (0.03s)
+--- PASS: TestAHungToolIsKilledWithItsChildrenAtTheTimeout (2.11s)
+--- PASS: TestAToolThatFloodsItsOutputIsStoppedAndBounded (0.03s)
+--- PASS: TestTheToolDoesNotInheritSecretsFromTheEnvironment (0.01s)
+--- PASS: TestMissingToolAndCancellationAreNotVerdictsAboutTheFile (0.20s)
+--- PASS: TestNotARegularFileIsRefused (0.00s)
+--- PASS: TestBoxWalkOnHandMadeFiles (0.11s)
+--- PASS: TestEBMLVintAndSegmentWalkOnHandMadeFiles (0.00s)
+--- PASS: TestTheCommandLineKeepsBothWhitelistsAndTheFilePrefix (0.00s)
+--- PASS: TestATruncationMessageFromFFprobeRejectsAFileThatLooksComplete (0.00s)
+--- PASS: TestSearchCombinesChannelsPlaylistsAndVideos (0.00s)
+--- PASS: TestAbortMultipartTreatsAMissingUploadAsDone (1.81s)
+
+## internal/processing metadata tests (run 2)
+--- PASS: TestUploadHTTPDraftMetadata (0.47s)
+--- PASS: TestMetadataRecordsTheFileAndQueuesExactlyOneHLSJob (0.56s)
+--- PASS: TestMetadataRefusesBadInputWithSafeCodesAndLeavesNothingBehind (0.98s)
+--- PASS: TestMetadataThroughTheRunnerEndsInCompletedOrFailedWithTheCode (0.36s)
+--- PASS: TestMetadataStorageProblems (1.11s)
+--- PASS: TestMetadataStopsForGoneVideosAndMissingTools (0.31s)
+--- PASS: TestSaveInspectionIsFencedByTheLease (0.16s)
+--- PASS: TestMetadataCancellationDuringDownloadCleansUp (0.23s)
+--- PASS: TestTheInspectedFileHasNoExtensionAndPrivatePermissions (0.20s)
+--- PASS: TestPublishValidatesMetadata (0.00s)
+
+## skipped (same 10 as before)
+--- SKIP: TestOpenAPIRoutesMatchTheHandler
+--- SKIP: TestOpenAPIErrorCodesMatchTheCode
+--- SKIP: TestS3PingChecksTheBucket
+--- SKIP: TestS3MultipartLifecycle
+--- SKIP: TestS3CompleteRefusesAWrongETag
+--- SKIP: TestS3AbortIsIdempotent
+--- SKIP: TestS3AbortedUploadRejectsParts
+--- SKIP: TestS3ExpiredPresignedURLAnswers403
+--- SKIP: TestS3RejectsWrongCredentials
+--- SKIP: TestS3ObjectsAndPrefixDeletion
+
+## before B6.3: 274 PASS / 0 FAIL / 10 SKIP

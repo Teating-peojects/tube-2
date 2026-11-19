@@ -214,6 +214,16 @@ describe("useUpload", () => {
       await waitFor(() => expect(phase(result)).toBe("processing"));
     });
 
+    it("a missing ETag (storage CORS) is reported as a server setup problem, once, without part-by-part retries", async () => {
+      m.putPart.mockRejectedValue(new UploadError("no_etag", 200));
+      const { result } = renderHook(() => useUpload(), { wrapper });
+      act(() => result.current.start(file()));
+      await waitFor(() => expect(phase(result)).toBe("failed"));
+      expect(result.current.error).toMatch(/not set up correctly on the server/);
+      expect(m.putPart.mock.calls.length).toBeLessThanOrEqual(3); // one try per concurrent part, no backoff rounds
+      expect(m.retryUpload).not.toHaveBeenCalled(); // not an expired link, so no recovery attempt either
+    });
+
     it("never shows the server's own text", () => {
       const e = new ApiError(500, "Internal: pq: relation does not exist", "boom");
       expect(classify(e).message).toBe("The upload failed. Retry to continue where you left off.");

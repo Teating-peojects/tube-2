@@ -37,13 +37,13 @@ that must change in `backend/` or `web/` (they must compile into those modules).
 - Verify and fill: cancel, retry, speed/ETA, `beforeunload` guard, network-loss handling, mobile layout.
 - Edits outside storage/: `web/src/features/upload`, `web/src/lib/uploader.ts`, tests.
 
-## Phase F — Integration tests
+## Phase F — Integration tests  (status: DONE with emulators, see PROGRESS.md and PHASE_5_TESTING.md)
 - Upload HTTP-level tests against real PostgreSQL (init -> complete -> status -> abort/retry) with a fake storage backend.
 - MinIO integration test, gated by env vars, plus a CI job with a MinIO service container. Cannot be executed in
   this sandbox (no Docker/MinIO): it will be written, and its status reported as NOT RUN unless you run it.
 - Cleanup and failed-upload recovery tests.
 
-## Phase G — OpenAPI, docs, completion report
+## Phase G — OpenAPI, docs, completion report  (status: DONE, see PHASE_5_COMPLETION_REPORT.md)
 - `storage/openapi.yaml` for the upload endpoints (existing paths), plus the remaining `PHASE_5_*` documents
   (architecture, API, security, testing, deployment) and `PHASE_5_COMPLETION_REPORT.md` with honest labels.
 - Housekeeping findings F1-F3 (exec bits, test-db.sh stdout, doc counts) are proposed as a separate small change.

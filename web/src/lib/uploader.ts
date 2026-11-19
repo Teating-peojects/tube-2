@@ -1,5 +1,5 @@
 export class UploadError extends Error {
-  constructor(public code: "network" | "part_failed" | "aborted", public status?: number) {
+  constructor(public code: "network" | "part_failed" | "aborted" | "no_etag", public status?: number) {
     super(code);
     this.name = "UploadError";
   }
@@ -25,8 +25,12 @@ export const xhrPut: PutPart = (blob, url, onProgress, signal) =>
     x.upload.onprogress = (e) => { arm(); if (e.lengthComputable) onProgress(e.loaded); };
     x.onload = () => {
       clearTimeout(timer);
-      if (x.status >= 200 && x.status < 300) resolve((x.getResponseHeader("ETag") ?? "").replace(/"/g, ""));
-      else reject(new UploadError("part_failed", x.status));
+      if (x.status < 200 || x.status >= 300) return reject(new UploadError("part_failed", x.status));
+      // The part arrived, but the browser may not read the ETag: the bucket's CORS must expose it. Without it the upload
+      // can never be completed, so say so instead of sending an empty ETag that only fails later with a vague error.
+      const etag = (x.getResponseHeader("ETag") ?? "").replace(/"/g, "");
+      if (etag) resolve(etag);
+      else reject(new UploadError("no_etag", x.status));
     };
     x.onerror = () => { clearTimeout(timer); reject(new UploadError("network")); };
     x.onabort = () => { clearTimeout(timer); reject(new UploadError(stalled ? "network" : "aborted")); };
@@ -56,6 +60,7 @@ export const waitForOnline = (signal: AbortSignal) =>
  * only delays the real recovery. Timeouts, throttling, 5xx and network errors are worth another attempt.
  */
 export const isTransient = (e: unknown) =>
+  !(e instanceof UploadError && e.code === "no_etag") && // a configuration problem: another attempt reads no ETag either
   !(e instanceof UploadError && e.code === "part_failed" && e.status !== undefined && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429);
 
 const sleep = (ms: number, signal: AbortSignal) =>

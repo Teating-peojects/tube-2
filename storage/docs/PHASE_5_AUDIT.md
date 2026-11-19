@@ -55,10 +55,10 @@ says the frontend is the source of truth), so this audit maps the document onto 
 | 18 | Documentation deliverables | MISSING -> this folder | `docs/`, PROGRESS.md, REMAINING_TASKS.md did not exist |
 
 ## 3. Findings from the real runs
-- **F1 (verified)** `db/scripts/migrate.sh`, `db/scripts/test-db.sh` and `security/scripts/promote.sh` are committed
+- **F1 (verified; FIXED in Phase F)** `db/scripts/migrate.sh`, `db/scripts/test-db.sh` and `security/scripts/promote.sh` are committed
   with mode 100644. Running them as documented fails with `Permission denied` on Linux/macOS. The CI step
   `db/scripts/test-db.sh > ...` is affected the same way unless the runner applies the bit.
-- **F2 (verified locally, CI impact not verified)** `migrate.sh` prints `applying ...` to stdout, and `test-db.sh`
+- **F2 (verified locally; FIXED in Phase F)** `migrate.sh` prints `applying ...` to stdout, and `test-db.sh`
   passes it through, so the captured `test-env.sh` contains non-export lines. `source`-ing it printed
   `applying: command not found` ten times. A runner that uses `bash -e` may abort there.
 - **F3 (verified)** Documentation drift: `dbcheck.py` reports 10 migrations / 39 tables; README, DESIGN.md and
@@ -110,3 +110,17 @@ Phase 5 overall: still **PARTIALLY COMPLETE** (frontend wiring, HTTP + MinIO int
 | 14 frontend tests | PARTIAL | 105 tests incl. a 20-test `useUpload` suite and fake-XHR tests |
 | 14 e2e | not run | still **NOT RUN** (no browsers in the sandbox); no e2e spec was added because it could not be verified and CI runs e2e |
 Phase 5 overall: still **PARTIALLY COMPLETE** (HTTP-level and MinIO integration tests, OpenAPI, e2e, metrics endpoint, lifecycle rule open).
+
+## 9. Status changes after Phase F (2026-11-14)
+| Row | Before | Now |
+|---|---|---|
+| 14 integration tests (PostgreSQL), upload HTTP level | PARTIAL | VERIFIED: 17 tests through the real router on PostgreSQL 16 (auth, CSRF, validation, lifecycle, refusals, recovery, retry, cancel, `/ready`) |
+| 14 integration tests (MinIO) | **MISSING / BLOCKED** | PARTIAL: 8 S3 tests written; verified on two emulators (s3rver, moto), **not on MinIO/AWS S3**; CI job `s3` prepared as a separate commit (needs the *Workflows* token permission to push), never run |
+| 10 multipart / SigV4 client | IMPLEMENTED (unit) | multipart lifecycle now checked against an independent S3 implementation (moto); signature enforcement unproven (neither emulator enforces it) |
+| 12 cleanup | VERIFIED on stubs | a real defect fixed: `NoSuchUpload` on abort would have made the sweeper retry forever |
+| 5.4 cancel | IMPLEMENTED (unit) | a 500 on cancelling a completed upload fixed; its queued job is now closed |
+| F1, F2 (CI scripts) | open | fixed |
+Phase 5 overall: **PARTIALLY COMPLETE**. Open: OpenAPI, run on real MinIO, Playwright e2e, metrics endpoint, bucket lifecycle rule, B6/B7.
+
+## 10. Final status (Phase G, 2026-11-14)
+Superseded by `PHASE_5_COMPLETION_REPORT.md`, which carries the final per-requirement labels. Changes in this phase: 13 OpenAPI -> COMPLETE (validated, drift-tested); 18 documentation -> COMPLETE; assets, draft metadata and publish are now verified over HTTP (before: unit tests only); a missing `ETag` in the browser is diagnosed instead of looping. Phase 5 overall: **PARTIALLY COMPLETE**.

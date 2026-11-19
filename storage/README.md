@@ -12,7 +12,10 @@ storage/
   docs/
     PHASE_5_AUDIT.md                requirement-by-requirement status, verified against code and real runs
     PHASE_5_IMPLEMENTATION_PLAN.md  phases A-G, route/naming mapping, decisions
-  baseline/                         raw output of the baseline runs (Phase A) + how to reproduce them
+  openapi.yaml                      the upload API (OpenAPI 3.0.3)
+  docs/PHASE_5_COMPLETION_REPORT.md final status, evidence, what is not verified
+  docs/PHASE_5_{ARCHITECTURE,API,SECURITY,DEPLOYMENT,TESTING,CLEANUP,FRONTEND}.md
+  baseline/                         raw output of every verification run + how to reproduce them
 ```
 
 ## Rules for this work (from `instruction.txt` and the phase document)

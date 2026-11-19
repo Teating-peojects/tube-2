@@ -31,7 +31,7 @@ build() {
   # by any other role are invisible to redxtube_app ("permission denied for table users").
   local mig="postgres://redxtube_migrator:$mig_pw@$host/$name"
   # stdout of this script is sourced by CI (it must contain only `export ...` lines): progress goes to stderr
-  DATABASE_URL="$mig" "$ROOT/scripts/migrate.sh" up >&2
+  DATABASE_URL="$mig" bash "$ROOT/scripts/migrate.sh" up >&2
   psql "$mig" -v ON_ERROR_STOP=1 -q -f "$ROOT/seeds/reference_data.sql"
 }
 

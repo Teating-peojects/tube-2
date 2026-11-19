@@ -68,6 +68,12 @@ describe("uploadParts: which failures are retried", () => {
       expect(calls.n, `status ${status}`).toBe(3);
     }
   });
+  it("does not retry a missing ETag part by part", async () => {
+    let calls = 0;
+    const put: PutPart = async () => { calls++; throw new UploadError("no_etag", 200); };
+    await expect(uploadParts({ ...base, put, done: new Map(), signal: new AbortController().signal, maxAttempts: 4, concurrency: 1 })).rejects.toMatchObject({ code: "no_etag" });
+    expect(calls).toBe(1);
+  });
   it("isTransient", () => {
     expect(isTransient(new UploadError("network"))).toBe(true);
     expect(isTransient(new UploadError("part_failed", 500))).toBe(true);
@@ -193,12 +199,21 @@ describe("xhrPut", () => {
     x.onload!();
     await expect(p).resolves.toBe("abc123");
   });
+  it("fails clearly when the browser cannot read the ETag (bucket CORS does not expose it)", async () => {
+    setup();
+    const p = put();
+    FakeXHR.last.status = 200; // the part arrived, but no ETag header is readable
+    FakeXHR.last.onload!();
+    await expect(p).rejects.toMatchObject({ code: "no_etag", status: 200 });
+    expect(isTransient(new UploadError("no_etag", 200))).toBe(false);
+  });
   it("reports progress", async () => {
     setup();
     const onProgress = vi.fn();
     const p = put(undefined, onProgress);
     FakeXHR.last.upload.onprogress!({ loaded: 2, lengthComputable: true });
     FakeXHR.last.status = 200;
+    FakeXHR.last.headers.etag = '"e1"';
     FakeXHR.last.onload!();
     await p;
     expect(onProgress).toHaveBeenCalledWith(2);

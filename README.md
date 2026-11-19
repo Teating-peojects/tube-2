@@ -69,6 +69,16 @@ go test -race ./...           # unit + integration (real PostgreSQL as redxtube_
 `TEST_ADMIN_DATABASE_URL` (superuser, fixtures and wipe), `TEST_DATABASE_URL` (the API's `redxtube_app` role) and
 `TEST_REDIS_URL`; both database URLs must point at a database whose name ends in `_test` (the tests wipe it).
 
+The S3 client has its own integration tests against a real S3-compatible server (MinIO in CI, job `s3`). They are skipped unless
+`TEST_S3_ENDPOINT` is set; also `TEST_S3_ACCESS_KEY`, `TEST_S3_SECRET_KEY`, `TEST_S3_BUCKET` (the bucket must exist):
+
+```bash
+docker run -d -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin-secret minio/minio server /data
+# create the bucket (curl >= 7.75), then:
+TEST_S3_ENDPOINT=http://127.0.0.1:9000 TEST_S3_ACCESS_KEY=minioadmin TEST_S3_SECRET_KEY=minioadmin-secret TEST_S3_BUCKET=redxtube \
+  go test ./internal/storage -run TestS3 -v
+```
+
 Static database checks (no server needed): `python3 db/tools/dbcheck.py`.
 
 ## Staff accounts
@@ -132,3 +142,6 @@ Handler -> Service -> Repository -> Database. No business logic in handlers.
 | B9 Moderation + admin | done (API only, no UI): report queue, actions, restore, users, audit, hash blocklist, auto-restrict |
 | B10 Hardening | done in code: upload verification, consent, hash blocklist, suspension expiry, CI, **fail-closed upload scanner hook**, child-process-group kill, **Prometheus metrics** (API + worker), **OpenAPI** generated from the routes, **k6 load test**: [backend/docs/observability.md](backend/docs/observability.md). Still open: plugging in a real CSAM/malware engine (needs a vendor agreement), running the load test on staging, a container/seccomp review |
 | Moderation / admin UI | not built: the admin API exists (B9), there is no screen for it yet |
+
+## Upload and storage (Phase 5)
+Design, API, security, deployment and the completion report are in [`storage/`](storage/README.md); the machine-readable API is [`storage/openapi.yaml`](storage/openapi.yaml).

@@ -345,6 +345,13 @@ func (c *Client) AbortMultipart(ctx context.Context, key, uploadID string) error
 	if errors.Is(err, ErrNotFound) {
 		return nil // already gone
 	}
+	// An upload that was aborted or completed before answers 404 NoSuchUpload (S3, MinIO, Ceph...). That is
+	// not covered by ErrNotFound (which is about objects), yet for an abort it means "done": the janitor, the
+	// storage sweeper and the user's cancel may all abort the same upload.
+	var se *Error
+	if errors.As(err, &se) && se.Status == http.StatusNotFound && se.Code == "NoSuchUpload" {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

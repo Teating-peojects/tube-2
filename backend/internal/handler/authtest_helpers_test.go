@@ -120,6 +120,9 @@ type authEnv struct {
 	hasher  *auth.Hasher
 	ipSeq   int
 	run     string
+
+	store   *memStore       // object storage behind the upload API (nil: uploads are off)
+	uploads *service.Upload // the upload service of that API, for janitor/sweeper calls
 }
 
 func lightHasher() *auth.Hasher { return auth.NewHasherWithParams(8*1024, 1, 1, 8) }
@@ -128,6 +131,11 @@ func setupAuth(t *testing.T) *authEnv { return setupAuthWith(t, nil) }
 
 // setupAuthWith lets a test replace the rate limiter (e.g. a broken Redis).
 func setupAuthWith(t *testing.T, limiter service.Limiter) *authEnv {
+	return setupAuthFull(t, limiter, nil, service.DefaultUploadLimits())
+}
+
+// setupAuthFull additionally mounts the upload API on top of an in-memory object store (nil store: uploads are off).
+func setupAuthFull(t *testing.T, limiter service.Limiter, store *memStore, limits service.UploadLimits) *authEnv {
 	t.Helper()
 	base := setup(t) // skips unless TEST_DATABASE_URL is set; wipes catalogue tables
 	redisURL := os.Getenv("TEST_REDIS_URL")
@@ -155,15 +163,22 @@ func setupAuthWith(t *testing.T, limiter service.Limiter) *authEnv {
 	socialRepo := repository.NewSocial(base.app)
 	catalogSvc := service.NewCatalog(repository.NewCatalog(base.app), urls).WithViewerData(socialRepo)
 	socialSvc := service.NewSocial(socialRepo, catalogSvc, limiter, auth.DeriveKeys([]byte(strings.Repeat("s3cr3t", 8))).IP, log)
-	h := server.New(server.Deps{
+	deps := server.Deps{
 		Cfg:     config.Config{Env: "development", MaxBodyBytes: 1 << 20, CORSOrigins: []string{appOrigin}},
 		Log:     log,
 		Auth:    &handler.Auth{Svc: svc, Cookies: cookies},
 		Authn:   middleware.Authenticate(svc, cookies),
 		Catalog: &handler.Catalog{Svc: catalogSvc},
 		Social:  &handler.Social{Svc: socialSvc},
-	})
-	return &authEnv{env: base, t: t, pool: base.pool, h: h, out: out, logs: logs, svc: svc, cookies: cookies, hasher: hasher, run: run}
+	}
+	var uploads *service.Upload
+	if store != nil {
+		uploads = service.NewUpload(repository.NewUpload(base.app), store, limiter, auth.DeriveKeys([]byte(strings.Repeat("s3cr3t", 8))).IP, urls, retryNotifier{}, log).WithLimits(limits)
+		deps.Upload = &handler.Upload{Svc: uploads}
+		deps.Optional = map[string]handler.Pinger{"storage": store}
+	}
+	h := server.New(deps)
+	return &authEnv{env: base, t: t, pool: base.pool, h: h, out: out, logs: logs, svc: svc, cookies: cookies, hasher: hasher, run: run, store: store, uploads: uploads}
 }
 
 func (e *authEnv) exec(sql string, args ...any) {

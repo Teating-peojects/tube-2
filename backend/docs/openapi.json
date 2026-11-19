@@ -4224,6 +4224,59 @@
         "x-handler": "notInterested"
       }
     },
+    "/api/v1/videos/{id}/processing": {
+      "get": {
+        "description": "Not described in api-contract.md yet.",
+        "operationId": "getVideosIdProcessing",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "GET /videos/{id}/processing",
+        "tags": [
+          "videos"
+        ],
+        "x-handler": "info"
+      }
+    },
     "/api/v1/videos/{id}/progress": {
       "post": {
         "description": "Auth: session. `{positionSec, watchedSec}` -> 204",

@@ -75,7 +75,9 @@ type Store interface {
 	FinishTranscode(ctx context.Context, j Job) error
 	Variants(ctx context.Context, videoID string) (ready []string, err error)
 	// FinishHLS sets hls_master_key and the encoding profile version, moves the video to READY,
-	// completes HLS and notifies the creator.
+	// completes HLS and notifies the creator. Before it does, it re-checks the video: still PROCESSING, not
+	// deleted, not removed, and its content hash is still not on the blocklist (a hash added after METADATA
+	// ran is caught here: the video is removed and ErrBlocked is returned instead of READY).
 	FinishHLS(ctx context.Context, j Job, masterKey, profile string) (creatorID string, err error)
 
 	// ClaimFailedForCleanup marks up to limit FAILED videos (failed longer than olderThan ago, no

@@ -104,6 +104,8 @@ type fakeStore struct {
 	gotMeta  MetadataResult
 	removed  string
 	profile  string
+	// finalizeBlocked makes FinishHLS report that the hash was blocklisted after METADATA ran
+	finalizeBlocked bool
 }
 
 func (f *fakeStore) Video(context.Context, string) (VideoRow, error) { return f.video, nil }
@@ -142,6 +144,9 @@ func (f *fakeStore) Variants(context.Context, string) ([]string, error) {
 	return out, nil
 }
 func (f *fakeStore) FinishHLS(_ context.Context, _ Job, key, profile string) (string, error) {
+	if f.finalizeBlocked {
+		return "", ErrBlocked
+	}
 	f.master = key
 	f.profile = profile
 	f.done = append(f.done, "HLS")
@@ -361,5 +366,23 @@ func TestPortraitAndSilentSource(t *testing.T) {
 	master := string(mem.objs["hls/"+vid+"/master.m3u8"])
 	if strings.Contains(master, "mp4a") || !strings.Contains(master, "RESOLUTION=720x1280") || strings.Contains(master, "1080p") {
 		t.Errorf("master:\n%s", master)
+	}
+}
+
+func TestFinalizeBlocklistHitBecomesASilentPermanentFailure(t *testing.T) {
+	needFFmpeg(t)
+	const vid = "0190aaaa-bbbb-7ccc-8ddd-888888888888"
+	src := makeVideo(t, "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p")
+	mem := newMem()
+	key := "uploads/" + vid + "/original.mp4"
+	mem.objs[key] = src
+	st := &fakeStore{video: VideoRow{CreatorID: "c", Status: "PROCESSING", Moderation: "OK", OriginalKey: key, Size: int64(len(src))},
+		meta: MetaRow{Width: 320, Height: 240, FPS: 10, Duration: 2}, finalizeBlocked: true,
+		variants: map[string]bool{"360p": true}}
+	p := newPipe(t, st, mem)
+	err := p.Run(context.Background(), Job{ID: "j", VideoID: vid, Type: "HLS"})
+	var je *JobError
+	if !errors.As(err, &je) || je.Code != "blocked_content" || !je.Permanent || !je.Silent {
+		t.Fatalf("a finalize-time blocklist hit must fail the job silently and for good: %v", err)
 	}
 }

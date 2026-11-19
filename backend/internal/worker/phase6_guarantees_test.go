@@ -251,3 +251,89 @@ func TestShutdownReleasesTheRunningJob(t *testing.T) {
 		t.Fatal("a shutdown must not fail the video")
 	}
 }
+
+// A hash can be added to the blocklist while a video waits in the queue or is being encoded. METADATA already
+// ran by then, so the finalize step checks again: the video is removed and audited instead of becoming READY.
+func TestBlocklistGrowingWhileProcessingIsCaughtAtFinalize(t *testing.T) {
+	e := newPGEnv(t)
+	vid := e.video(3)
+	s := e.store("w")
+	sum := make([]byte, 32)
+	copy(sum, "finalize-blocklist-"+vid)
+	e.exec(`UPDATE videos SET video_type = 'SHORT', duration_seconds = 5, content_sha256 = $2 WHERE id = $1::uuid`, vid, sum) // not blocked yet
+	j := claimFor(t, s, vid)
+	if err := s.FinishTranscode(ctxb, j); err != nil {
+		t.Fatal(err)
+	}
+	hj := claimFor(t, s, vid)
+
+	e.exec(`INSERT INTO blocked_hashes (sha256, reason) VALUES ($1, 'added while processing')`, sum) // moderation acts now
+
+	if _, err := s.FinishHLS(ctxb, hj, "hls/"+vid+"/master.m3u8", "p"); err != ErrBlocked {
+		t.Fatalf("FinishHLS on a blocklisted file: %v", err)
+	}
+	if e.str(`SELECT moderation_status::text FROM videos WHERE id = $1::uuid`, vid) != "REMOVED" {
+		t.Fatal("the video was not removed")
+	}
+	if e.str(`SELECT status::text FROM videos WHERE id = $1::uuid`, vid) == "READY" {
+		t.Fatal("a blocklisted video became READY")
+	}
+	if e.num(`SELECT count(*) FROM audit_logs WHERE action = 'moderation.scan_match' AND target_id = $1 AND metadata->>'detail' LIKE '%finalize%'`, vid) != 1 {
+		t.Fatal("the removal was not audited")
+	}
+	if e.num(`SELECT count(*) FROM notifications WHERE video_id = $1::uuid AND type = 'VIDEO_READY'`, vid) != 0 {
+		t.Fatal("the creator was told the video is ready")
+	}
+}
+
+// 2 and 10 workers claiming at once: SKIP LOCKED hands every job to exactly one of them.
+func TestManyWorkersNeverShareAJob(t *testing.T) {
+	for _, workers := range []int{2, 10} {
+		e := newPGEnv(t)
+		var vids []string
+		for i := 0; i < 30; i++ {
+			vids = append(vids, e.video(3))
+		}
+		e.exec(`UPDATE video_processing_jobs SET status = 'CANCELLED' WHERE status = 'QUEUED' AND NOT (video_id = ANY($1::uuid[]))`, vids)
+
+		type claim struct{ id, video string }
+		out := make(chan claim, 100)
+		done := make(chan struct{})
+		for w := 0; w < workers; w++ {
+			go func(w int) {
+				defer func() { done <- struct{}{} }()
+				s := e.store("w" + strconv.Itoa(w))
+				for {
+					j, err := s.Claim(ctxb)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					if j == nil {
+						return
+					}
+					if j.Attempts != 1 {
+						t.Errorf("attempts %d", j.Attempts)
+					}
+					out <- claim{j.ID, j.VideoID}
+				}
+			}(w)
+		}
+		for w := 0; w < workers; w++ {
+			<-done
+		}
+		close(out)
+		seen := map[string]int{}
+		for c := range out {
+			seen[c.id]++
+		}
+		if len(seen) != 30 {
+			t.Fatalf("%d workers: %d distinct jobs claimed, want 30", workers, len(seen))
+		}
+		for id, n := range seen {
+			if n != 1 {
+				t.Fatalf("%d workers: job %s claimed %d times", workers, id, n)
+			}
+		}
+	}
+}

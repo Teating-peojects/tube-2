@@ -53,5 +53,9 @@ func asJobError(err error) *JobError {
 // ErrLeaseLost means this worker no longer owns the job (it was requeued after a missed heartbeat).
 var ErrLeaseLost = errors.New("worker: job lease lost")
 
+// ErrBlocked means the file's SHA-256 is on the hash blocklist. The video has already been removed (moderation_status
+// REMOVED) and audited in the same transaction that discovered it.
+var ErrBlocked = errors.New("worker: video matches the hash blocklist")
+
 // ErrVideoGone means the video was deleted, removed or is no longer PROCESSING.
 var ErrVideoGone = errors.New("worker: video no longer processable")

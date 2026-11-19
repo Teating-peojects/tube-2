@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -289,5 +290,113 @@ func TestFailureCodeReachesTheStatusQuery(t *testing.T) {
 	v3 := e.video(3)
 	if pr, err := up.Progress(ctxb, v3); err != nil || pr.FailCode != "" || pr.Active == nil {
 		t.Fatalf("active: %+v %v", pr, err)
+	}
+}
+
+func TestProcessingInfoShowsStateToOwnerAndStaffOnly(t *testing.T) {
+	e := newPGEnv(t)
+	svc := processingSvc(t, e)
+	owner := principal(e.user, auth.RoleUser)
+	staff := principal(e.newUser(), auth.RoleModerator)
+	stranger := principal(e.newUser(), auth.RoleUser)
+	s := e.store("w")
+	info := func(who *auth.Principal, vid string) service.ProcessingInfo {
+		t.Helper()
+		out, err := svc.ProcessingInfo(ctxb, who, vid)
+		if err != nil {
+			t.Fatalf("ProcessingInfo: %v", err)
+		}
+		return out
+	}
+
+	vid := e.video(3)
+	// waiting in the queue
+	if o := info(owner, vid); o.Status != "queued" || o.Stage != "inspecting" || o.Progress != 0 || !o.CanCancel || o.CanRetry {
+		t.Fatalf("queued: %+v", o)
+	}
+	// a worker holds the first job
+	j := claimFor(t, s, vid)
+	if o := info(owner, vid); o.Status != "processing" || o.Stage != "inspecting" {
+		t.Fatalf("processing: %+v", o)
+	}
+	// first step done: 25 %, the next job waits
+	sum := make([]byte, 32)
+	if _, err := s.SaveMetadata(ctxb, j, MetadataResult{Probe: Probe{Width: 640, Height: 360, VideoCodec: "h264", Container: "mp4"}, VideoType: "SHORT", Seconds: 5, SHA256: sum}); err != nil {
+		t.Fatal(err)
+	}
+	if o := info(owner, vid); o.Status != "queued" || o.Stage != "thumbnails" || o.Progress != 25 {
+		t.Fatalf("after metadata: %+v", o)
+	}
+
+	// failed with a stable code: the owner gets the sentence, staff may retry, nobody sees internals
+	f := e.video(3)
+	fj := claimFor(t, s, f)
+	je := permanent("too_long", "worker-side sentence")
+	je.Err = errors.New("ffmpeg: /work/secret/clip.mp4: boom")
+	if _, err := s.Fail(ctxb, fj, je); err != nil {
+		t.Fatal(err)
+	}
+	o := info(owner, f)
+	if o.Status != "failed" || o.ErrorCode != "too_long" || !strings.Contains(o.Message, "maximum allowed length") || o.CanRetry || o.CanCancel {
+		t.Fatalf("failed (owner): %+v", o)
+	}
+	if st := info(staff, f); !st.CanRetry {
+		t.Fatalf("failed (staff) must offer retry: %+v", st)
+	}
+	body, _ := json.Marshal(o)
+	for _, leak := range []string{"hls/", "uploads/", "/work", "ffmpeg", "secret", "storage"} {
+		if strings.Contains(string(body), leak) {
+			t.Fatalf("%q leaked into the processing info: %s", leak, body)
+		}
+	}
+
+	// cancelled has its own state
+	c := e.video(3)
+	if err := svc.Cancel(ctxb, owner, service.ClientInfo{}, c, ""); err != nil {
+		t.Fatal(err)
+	}
+	if o := info(owner, c); o.Status != "cancelled" || o.ErrorCode != "cancelled" || o.Message != "Processing was cancelled." {
+		t.Fatalf("cancelled: %+v", o)
+	}
+
+	// ready: 100 %, what was produced is listed
+	r := e.video(3)
+	e.exec(`UPDATE videos SET video_type = 'SHORT', duration_seconds = 5 WHERE id = $1::uuid`, r)
+	rj := claimFor(t, s, r)
+	for _, rd := range Plan(1280, 720) {
+		if err := s.SaveVariant(ctxb, r, VariantOut{R: rd, Key: "hls/" + r + "/" + rd.Name + "/", Bytes: 10}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.exec(`INSERT INTO video_thumbnails (video_id, storage_key, type, source, status) VALUES ($1::uuid, 'thumbs/x.jpg', 'THUMBNAIL', 'GENERATED', 'READY')`, r)
+	if err := s.FinishTranscode(ctxb, rj); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.FinishHLS(ctxb, claimFor(t, s, r), "hls/"+r+"/master.m3u8", "h264-aac-hls-v1"); err != nil {
+		t.Fatal(err)
+	}
+	ro := info(owner, r)
+	if ro.Status != "ready" || ro.Progress != 100 || strings.Join(ro.Renditions, ",") != "360p,480p,720p" || ro.Thumbnails != 1 || ro.Profile != "h264-aac-hls-v1" || ro.CanCancel {
+		t.Fatalf("ready: %+v", ro)
+	}
+
+	// removed by moderation
+	e.exec(`UPDATE videos SET moderation_status = 'REMOVED' WHERE id = $1::uuid`, r)
+	if o := info(owner, r); o.Status != "removed" {
+		t.Fatalf("removed: %+v", o)
+	}
+
+	// strangers and bad ids learn nothing
+	if _, err := svc.ProcessingInfo(ctxb, stranger, vid); err == nil {
+		t.Fatal("a stranger can see another creator's processing state")
+	} else {
+		wantCode(t, err, "target_not_found")
+	}
+	_, err := svc.ProcessingInfo(ctxb, owner, "nope")
+	wantCode(t, err, "target_not_found")
+	_, err = svc.ProcessingInfo(ctxb, owner, uuid.NewString())
+	wantCode(t, err, "target_not_found")
+	if o := info(staff, vid); o.Status == "" {
+		t.Fatal("staff cannot see a creator's processing state")
 	}
 }

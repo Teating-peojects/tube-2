@@ -452,6 +452,10 @@ func (p *Pipeline) master(ctx context.Context, j Job, v VideoRow) error {
 		return err
 	}
 	creator, err := p.Store.FinishHLS(ctx, j, key, prof.Version)
+	if errors.Is(err, ErrBlocked) {
+		p.Log.WarnContext(ctx, "video matched the hash blocklist at finalize", "video", j.VideoID)
+		return &JobError{Code: "blocked_content", Message: "This video was removed by moderation", Permanent: true, Silent: true}
+	}
 	if err != nil {
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 
 // Processing serves the processing controls (Phase 6):
 //
+//	GET  /api/v1/videos/{id}/processing                  owner or MODERATOR+: stage, progress, safe error code, renditions
 //	POST /api/v1/studio/videos/{id}/processing/cancel   creator (own video) or MODERATOR+; body {"reason"} optional
 //	POST /api/v1/admin/videos/{id}/processing/retry     MODERATOR+; body {"reason"} required
 //
@@ -20,11 +21,12 @@ type Processing struct {
 	TrustProxy bool
 }
 
-func (h Processing) info(r *http.Request) service.ClientInfo {
+func (h Processing) client(r *http.Request) service.ClientInfo {
 	return service.ClientInfo{IP: auth.ClientIP(r, h.TrustProxy), UserAgent: r.UserAgent(), RequestID: httpx.RequestIDFrom(r.Context())}
 }
 
 func (h Processing) Routes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/videos/{id}/processing", middleware.RequireAuth(httpx.Handle(h.info)))
 	mux.HandleFunc("POST /api/v1/studio/videos/{id}/processing/cancel", middleware.RequireVerified(httpx.Handle(h.cancel)))
 	mux.HandleFunc("POST /api/v1/admin/videos/{id}/processing/retry", middleware.RequireRole(auth.RoleModerator)(httpx.Handle(h.retry)))
 }
@@ -39,7 +41,7 @@ func (h Processing) cancel(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
-	if err := h.Svc.Cancel(r.Context(), me(r), h.info(r), r.PathValue("id"), in.Reason); err != nil {
+	if err := h.Svc.Cancel(r.Context(), me(r), h.client(r), r.PathValue("id"), in.Reason); err != nil {
 		return err
 	}
 	return done(w)
@@ -50,8 +52,17 @@ func (h Processing) retry(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := h.Svc.Retry(r.Context(), me(r), h.info(r), r.PathValue("id"), reason); err != nil {
+	if err := h.Svc.Retry(r.Context(), me(r), h.client(r), r.PathValue("id"), reason); err != nil {
 		return err
 	}
 	return done(w)
+}
+
+func (h Processing) info(w http.ResponseWriter, r *http.Request) error {
+	out, err := h.Svc.ProcessingInfo(r.Context(), me(r), r.PathValue("id"))
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, out)
+	return nil
 }

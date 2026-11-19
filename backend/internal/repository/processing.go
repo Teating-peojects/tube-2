@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -131,4 +132,54 @@ func withMeta(m map[string]any, k string, v any) map[string]any {
 	}
 	out[k] = v
 	return out
+}
+
+// ProcInfo is the raw state behind GET /videos/{id}/processing.
+type ProcInfo struct {
+	CreatorID, VideoStatus, Moderation, Profile string
+	Deleted                                     bool
+	UpdatedAt                                   time.Time
+	JobsDone                                    int
+	ActiveJob                                   string // job type that is queued or running, "" if none
+	ActiveStatus                                string // QUEUED or PROCESSING when ActiveJob is set
+	FailCode                                    string // stable code of the latest failed or cancelled job
+	Renditions                                  []string
+	Thumbnails                                  int
+}
+
+// Info reads everything the processing view needs. Authorization is the caller's job (service layer).
+func (r *Processing) Info(ctx context.Context, videoID string) (ProcInfo, error) {
+	var v ProcInfo
+	err := r.pool.QueryRow(ctx, `SELECT creator_id::text, status::text, moderation_status::text, COALESCE(processing_profile, ''),
+  deleted_at IS NOT NULL, updated_at FROM videos WHERE id = $1::uuid`, videoID).
+		Scan(&v.CreatorID, &v.VideoStatus, &v.Moderation, &v.Profile, &v.Deleted, &v.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return v, ErrTargetNotFound
+	}
+	if err != nil {
+		return v, err
+	}
+	if err := r.pool.QueryRow(ctx, `SELECT
+  (SELECT count(*) FROM video_processing_jobs WHERE video_id = $1::uuid AND status = 'COMPLETED')::int,
+  COALESCE((SELECT job_type::text FROM video_processing_jobs WHERE video_id = $1::uuid AND status IN ('QUEUED', 'PROCESSING') ORDER BY created_at LIMIT 1), ''),
+  COALESCE((SELECT status::text FROM video_processing_jobs WHERE video_id = $1::uuid AND status IN ('QUEUED', 'PROCESSING') ORDER BY created_at LIMIT 1), ''),
+  COALESCE((SELECT split_part(COALESCE(error_message, ''), ':', 1) FROM video_processing_jobs
+            WHERE video_id = $1::uuid AND status IN ('FAILED', 'CANCELLED') ORDER BY updated_at DESC LIMIT 1), ''),
+  (SELECT count(*) FROM video_thumbnails WHERE video_id = $1::uuid AND status = 'READY')::int`, videoID).
+		Scan(&v.JobsDone, &v.ActiveJob, &v.ActiveStatus, &v.FailCode, &v.Thumbnails); err != nil {
+		return v, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT resolution::text FROM video_variants WHERE video_id = $1::uuid AND status = 'READY' ORDER BY height`, videoID)
+	if err != nil {
+		return v, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return v, err
+		}
+		v.Renditions = append(v.Renditions, name)
+	}
+	return v, rows.Err()
 }

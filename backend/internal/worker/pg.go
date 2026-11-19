@@ -64,7 +64,8 @@ WHERE id = $1::uuid AND status IN ('UPLOADING', 'PROCESSING') RETURNING creator_
 )
 SELECT count(*)::int FROM stale`
 
-	qVideo = `SELECT creator_id::text, status::text, moderation_status::text, COALESCE(original_storage_key, ''),
+	qBlockedNow = `SELECT EXISTS (SELECT 1 FROM blocked_hashes b JOIN videos v ON v.content_sha256 = b.sha256 WHERE v.id = $1::uuid)`
+	qVideo      = `SELECT creator_id::text, status::text, moderation_status::text, COALESCE(original_storage_key, ''),
   COALESCE(file_size_bytes, 0), deleted_at IS NOT NULL FROM videos WHERE id = $1::uuid`
 	qMeta = `SELECT m.width, m.height, COALESCE(m.fps, 0)::float8, m.has_audio, COALESCE(v.duration_seconds, 0)
 FROM video_metadata m JOIN videos v ON v.id = m.video_id WHERE m.video_id = $1::uuid`
@@ -311,7 +312,15 @@ func (s *PG) Variants(ctx context.Context, videoID string) ([]string, error) {
 }
 
 func (s *PG) FinishHLS(ctx context.Context, j Job, masterKey, profile string) (creator string, err error) {
+	blocked := false
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		// The blocklist can grow while a video waits in the queue or is being encoded: check it again now.
+		if err := tx.QueryRow(ctx, qBlockedNow, j.VideoID).Scan(&blocked); err != nil {
+			return err
+		}
+		if blocked {
+			return s.removeTx(ctx, tx, j.VideoID, "hash blocklist matched at finalize")
+		} // committed: the removal and its audit entry must survive
 		err := tx.QueryRow(ctx, qReady, j.VideoID, masterKey, profile).Scan(&creator)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrVideoGone
@@ -325,6 +334,9 @@ func (s *PG) FinishHLS(ctx context.Context, j Job, masterKey, profile string) (c
 		_, err = tx.Exec(ctx, qNotify, creator, "VIDEO_READY", j.VideoID, "{}")
 		return err
 	})
+	if err == nil && blocked {
+		return "", ErrBlocked
+	}
 	return creator, err
 }
 
@@ -362,19 +374,22 @@ func (s *PG) ReleaseCleanup(ctx context.Context, videoID string) error {
 // blocked-hash trigger has). The original stays in storage untouched: what happens to evidence is a
 // legal decision, not the worker's.
 func (s *PG) RemoveVideo(ctx context.Context, j Job, reason string) error {
-	return s.inTx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE videos SET moderation_status = 'REMOVED', updated_at = now()
-WHERE id = $1::uuid AND deleted_at IS NULL`, j.VideoID)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
-			return ErrVideoGone
-		}
-		_, err = tx.Exec(ctx, `INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, metadata)
-VALUES (NULL, 'moderation.scan_match', 'video', $1, jsonb_build_object('detail', $2::text))`, j.VideoID, reason)
+	return s.inTx(ctx, func(tx pgx.Tx) error { return s.removeTx(ctx, tx, j.VideoID, reason) })
+}
+
+// removeTx marks the video REMOVED and writes the audit entry inside the caller's transaction.
+func (s *PG) removeTx(ctx context.Context, tx pgx.Tx, videoID, reason string) error {
+	tag, err := tx.Exec(ctx, `UPDATE videos SET moderation_status = 'REMOVED', updated_at = now()
+WHERE id = $1::uuid AND deleted_at IS NULL`, videoID)
+	if err != nil {
 		return err
-	})
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrVideoGone
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, metadata)
+VALUES (NULL, 'moderation.scan_match', 'video', $1, jsonb_build_object('detail', $2::text))`, videoID, reason)
+	return err
 }
 
 var _ Store = (*PG)(nil)

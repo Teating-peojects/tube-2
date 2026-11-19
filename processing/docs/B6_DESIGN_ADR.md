@@ -1,15 +1,15 @@
 # B6 Design record (ADR) - processing worker
 
-Status: **DRAFT, waiting for the owner's answers to D1, D2, D3, D8.** Everything marked PROPOSED can change after those answers.
+Status: **D1, D2, D3, D8 DECIDED by the owner on 2026-11-19: all proposed defaults accepted.** Items still marked PROPOSED below are engineering choices to be confirmed by tests in later sub-phases.
 Evidence for each fact: `B6_AUDIT.md`. No product code exists yet.
 
-## Decisions waiting for the owner
+## Decisions (owner answered: all defaults)
 | ID | Question | Proposed default | Why |
 |---|---|---|---|
-| D1 | After `READY`, may the owner publish alone, or must a moderator approve first? | owner publishes (as today) + post-publication moderation; a pre-publication queue only for flagged accounts (B9) | Keeps the existing consent flow and tests; the queue can be added later without changing B6 |
-| D2 | HLS segments: MPEG-TS or fMP4 | MPEG-TS | Works everywhere with hls.js (already a web dependency) and Safari; simplest muxer settings. fMP4 is worth it only for encryption/low latency |
-| D3 | One pipeline job per video, or a chain `METADATA -> TRANSCODE -> HLS -> THUMBNAIL` | `METADATA` job (already enqueued) inspects/validates, then enqueues **one `HLS` job** that transcodes, packages and makes thumbnails | One lease, one retry budget, one output version, one finalize transaction. Cost: the upload status endpoint must read `progress`/`stage` from the job (audit section 4) |
-| D8 | Keep the original after a successful transcode | keep (configurable), never auto-delete | Needed for reprocessing and for hash/takedown evidence; storage cost is the trade-off |
+| D1 DECIDED | After `READY`, may the owner publish alone, or must a moderator approve first? | owner publishes (as today) + post-publication moderation; a pre-publication queue only for flagged accounts (B9) | Keeps the existing consent flow and tests; the queue can be added later without changing B6 |
+| D2 DECIDED | HLS segments: MPEG-TS or fMP4 | MPEG-TS | Works everywhere with hls.js (already a web dependency) and Safari; simplest muxer settings. fMP4 is worth it only for encryption/low latency |
+| D3 DECIDED | One pipeline job per video, or a chain `METADATA -> TRANSCODE -> HLS -> THUMBNAIL` | `METADATA` job (already enqueued) inspects/validates, then enqueues **one `HLS` job** that transcodes, packages and makes thumbnails | One lease, one retry budget, one output version, one finalize transaction. Cost: the upload status endpoint must read `progress`/`stage` from the job (audit section 4) |
+| D8 DECIDED | Keep the original after a successful transcode | keep (configurable), never auto-delete | Needed for reprocessing and for hash/takedown evidence; storage cost is the trade-off |
 
 ## Design (PROPOSED, independent of D1/D2/D8; D3 shapes the job part)
 **Queue.** The existing `video_processing_jobs` table on PostgreSQL. No second queue. `Claim` = one statement with `FOR UPDATE SKIP LOCKED` on

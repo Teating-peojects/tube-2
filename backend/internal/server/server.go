@@ -5,6 +5,7 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/redxtube/api/internal/apperr"
@@ -34,6 +35,12 @@ type Deps struct {
 	Realtime      *handler.Realtime
 	// Admin serves moderation and administration (needs Auth); nil disables it.
 	Admin *handler.Admin
+	// Processing serves cancel/retry of video processing (Phase 6); nil disables it.
+	Processing *handler.Processing
+	// Stream serves signed HLS objects at /stream/{token}/{key...} (B7); nil disables it.
+	Stream http.Handler
+	// Metrics, when set, wraps every request (see internal/metrics).
+	Metrics httpx.Middleware
 	// Authn resolves the session cookie on every request (required when Auth is set).
 	Authn httpx.Middleware
 }
@@ -71,8 +78,15 @@ func New(d Deps) http.Handler {
 	if d.Realtime != nil {
 		d.Realtime.Routes(mux)
 	}
+	if d.Processing != nil {
+		d.Processing.Routes(mux)
+	}
 	if d.Admin != nil {
 		d.Admin.Routes(mux)
+	}
+
+	if d.Stream != nil {
+		mux.Handle("GET /stream/{token}/{key...}", d.Stream)
 	}
 
 	mux.HandleFunc("/", httpx.Handle(func(w http.ResponseWriter, r *http.Request) error {
@@ -88,8 +102,26 @@ func New(d Deps) http.Handler {
 		middleware.CSRFOrigin(d.Cfg.CORSOrigins),
 		httpx.BodyLimit(d.Cfg.MaxBodyBytes),
 	}
+	if d.Metrics != nil {
+		chain = append(chain, d.Metrics)
+	}
 	if d.Authn != nil {
-		chain = append(chain, d.Authn)
+		chain = append(chain, skipUnder("/stream/", d.Authn))
 	}
 	return httpx.Chain(mux, chain...)
+}
+
+// skipUnder applies mw to every request except those under prefix. The stream is authorised by its
+// URL token, so segment requests must not cost a session lookup each.
+func skipUnder(prefix string, mw httpx.Middleware) httpx.Middleware {
+	return func(next http.Handler) http.Handler {
+		with := mw(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, prefix) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			with.ServeHTTP(w, r)
+		})
+	}
 }

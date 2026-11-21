@@ -9,7 +9,7 @@ db/         PostgreSQL 16 schema: migrations, bootstrap, seeds, ops, docs, check
 security/   security design docs + staff/role tooling
 ```
 
-Stack: Go 1.22, PostgreSQL 16 (pgx), Redis 7 (go-redis), Argon2id, Resend (email), FFmpeg worker + S3-compatible storage (later phases), Docker, Next.js 15.
+Stack: Go 1.22, PostgreSQL 16 (pgx), Redis 7 (go-redis), Argon2id, Resend (email), FFmpeg worker + S3-compatible storage, Docker, Next.js 15.
 
 Contracts and design:
 - API contract: [backend/docs/api-contract.md](backend/docs/api-contract.md)
@@ -136,11 +136,12 @@ Handler -> Service -> Repository -> Database. No business logic in handlers.
 | B3 Auth + age gate | done: [security/auth.md](security/auth.md) |
 | B4 Social | done: reactions, subscriptions, comments (pin, replies, review mode), views/progress/history, watch later, liked, playlists, block / not interested, reports |
 | B5 Upload | done: direct-to-storage multipart, server-side verification, drafts, thumbnails, captions, consent record, publish |
-| B6 FFmpeg-HLS worker | **not built**: nothing moves an uploaded video from `PROCESSING` to `READY`, so a real upload cannot be published yet |
-| B7 Playback (signed HLS) | not wired: `internal/playback` exists but is unused |
+| B6 FFmpeg-HLS worker (Phase 6) | partially complete: `cmd/worker` (METADATA, THUMBNAIL, TRANSCODE, HLS) with configurable limits/profile, output validation and verification, cancel/retry/status APIs, cleanup, metrics; tested with real ffmpeg, PostgreSQL and an S3 API; **not run in Docker or against real S3/MinIO**: [processing/docs/PHASE_6_COMPLETION_REPORT.md](processing/docs/PHASE_6_COMPLETION_REPORT.md), [backend/docs/worker.md](backend/docs/worker.md), [backend/docs/worker-recovery.md](backend/docs/worker-recovery.md) |
+| B7 Playback (signed HLS) | done: signed 6 h stream URLs from `GET /videos/{id}`, token-verifying stream handler with takedown gate, tokens never logged, tested end to end with a real ffmpeg player: [backend/docs/playback.md](backend/docs/playback.md) |
 | B8 Notifications + Studio + realtime | done: inbox, unread count, Studio overview/analytics/videos/comments, WebSocket over Redis pub/sub |
 | B9 Moderation + admin | done (API only, no UI): report queue, actions, restore, users, audit, hash blocklist, auto-restrict |
-| B10 Hardening | partly: upload verification, consent, hash blocklist trigger, suspension expiry, CI for Go. Still open: worker sandboxing, malware/CSAM scanning integration, load tests |
+| B10 Hardening | done in code: upload verification, consent, hash blocklist, suspension expiry, CI, **fail-closed upload scanner hook**, child-process-group kill, **Prometheus metrics** (API + worker), **OpenAPI** generated from the routes, **k6 load test**: [backend/docs/observability.md](backend/docs/observability.md). Still open: plugging in a real CSAM/malware engine (needs a vendor agreement), running the load test on staging, a container/seccomp review |
+| Moderation / admin UI | not built: the admin API exists (B9), there is no screen for it yet |
 
 ## Upload and storage (Phase 5)
 Design, API, security, deployment and the completion report are in [`storage/`](storage/README.md); the machine-readable API is [`storage/openapi.yaml`](storage/openapi.yaml).

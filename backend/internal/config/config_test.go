@@ -183,8 +183,66 @@ func TestStorageHTTPSRequiredInProduction(t *testing.T) {
 		t.Fatalf("plain http public endpoint must be refused in production, got %v", err)
 	}
 	m["STORAGE_PUBLIC_ENDPOINT"] = "https://files.example.com"
+	m["STREAM_BASE_URL"] = "https://api.redxtube.com/stream" // required with storage in production (B7)
 	if _, err := Load(env(m)); err != nil {
 		t.Fatalf("valid production storage rejected: %v", err)
+	}
+}
+
+func TestPlaybackConfig(t *testing.T) {
+	m := devBase()
+	m["STREAM_BASE_URL"] = "http://localhost:8080/stream/"
+	c, err := Load(env(m))
+	if err != nil || c.StreamBaseURL != "http://localhost:8080/stream" {
+		t.Fatalf("%v %q", err, c.StreamBaseURL)
+	}
+	for name, v := range map[string]string{"scheme": "ftp://x/stream", "no host": "https:///stream", "query": "https://x/stream?a=b"} {
+		m := devBase()
+		m["STREAM_BASE_URL"] = v
+		if _, err := Load(env(m)); err == nil || !strings.Contains(err.Error(), "STREAM_BASE_URL") {
+			t.Errorf("%s accepted: %v", name, err)
+		}
+	}
+	m = devBase()
+	m["PLAYBACK_SIGNING_KEY"] = "too-short"
+	if _, err := Load(env(m)); err == nil || !strings.Contains(err.Error(), "PLAYBACK_SIGNING_KEY") {
+		t.Errorf("short key accepted: %v", err)
+	}
+	m["PLAYBACK_SIGNING_KEY"] = secret
+	if c, err := Load(env(m)); err != nil || string(c.PlaybackKey) != secret {
+		t.Errorf("valid key: %v", err)
+	}
+
+	// production: HLS must never be served from a public bucket
+	p := prodBase()
+	p["STORAGE_ENDPOINT"], p["STORAGE_ACCESS_KEY"], p["STORAGE_SECRET_KEY"], p["STORAGE_BUCKET"] = "https://s3.example.com", "k", "s", "redxtube"
+	if _, err := Load(env(p)); err == nil || !strings.Contains(err.Error(), "STREAM_BASE_URL is required") {
+		t.Errorf("production with storage and no stream URL: %v", err)
+	}
+	p["STREAM_BASE_URL"] = "http://api.redxtube.com/stream"
+	if _, err := Load(env(p)); err == nil || !strings.Contains(err.Error(), "https in production") {
+		t.Errorf("http stream URL in production: %v", err)
+	}
+	p["STREAM_BASE_URL"] = "https://api.redxtube.com/stream"
+	if _, err := Load(env(p)); err != nil {
+		t.Errorf("valid production config: %v", err)
+	}
+}
+
+func TestMetricsAddr(t *testing.T) {
+	m := devBase()
+	m["METRICS_ADDR"] = "127.0.0.1:9090"
+	if c, err := Load(env(m)); err != nil || c.MetricsAddr != "127.0.0.1:9090" {
+		t.Fatalf("%v %q", err, c.MetricsAddr)
+	}
+	for _, bad := range []string{"9090", "host:0", "host:99999", "host:abc"} {
+		m["METRICS_ADDR"] = bad
+		if _, err := Load(env(m)); err == nil || !strings.Contains(err.Error(), "METRICS_ADDR") {
+			t.Errorf("%q accepted: %v", bad, err)
+		}
+	}
+	if c, _ := Load(env(devBase())); c.MetricsAddr != "" {
+		t.Error("metrics must be off by default")
 	}
 }
 

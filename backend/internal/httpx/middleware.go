@@ -113,13 +113,27 @@ func Logger(log *slog.Logger) Middleware {
 			log.Log(r.Context(), lvl, "http_request",
 				"request_id", RequestIDFrom(r.Context()),
 				"method", r.Method,
-				"path", r.URL.Path,
+				"path", LogPath(r.URL.Path),
 				"status", rec.status,
 				"bytes", rec.bytes,
 				"latency_ms", time.Since(start).Milliseconds(),
 			)
 		})
 	}
+}
+
+// LogPath hides the playback token of /stream/<token>/... URLs: it is a bearer credential and must
+// never reach the logs.
+func LogPath(p string) string {
+	const prefix = "/stream/"
+	if !strings.HasPrefix(p, prefix) {
+		return p
+	}
+	rest := p[len(prefix):]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return prefix + "<token>" + rest[i:]
+	}
+	return prefix + "<token>"
 }
 
 // Recover turns panics into a 500 and logs the stack server-side only.

@@ -81,3 +81,37 @@ func TestNotFoundIsJSONWithCode(t *testing.T) {
 		t.Fatal("middleware chain not applied")
 	}
 }
+
+func TestStreamRouteSkipsSessionLookup(t *testing.T) {
+	var authnCalls int
+	authn := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authnCalls++
+			next.ServeHTTP(w, r)
+		})
+	}
+	var gotToken, gotKey string
+	stream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken, gotKey = r.PathValue("token"), r.PathValue("key")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h := New(Deps{
+		Cfg:    config.Config{Env: "development", MaxBodyBytes: 1 << 20},
+		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Stream: stream, Authn: authn,
+	})
+	if rr := get(h, "/stream/123.abc/hls/v/720p/seg_00001.ts"); rr.Code != 204 || gotToken != "123.abc" || gotKey != "hls/v/720p/seg_00001.ts" {
+		t.Fatalf("stream route: %d token=%q key=%q", rr.Code, gotToken, gotKey)
+	}
+	if authnCalls != 0 {
+		t.Fatalf("session lookup ran for a stream request (%d)", authnCalls)
+	}
+	get(h, "/health")
+	if authnCalls != 1 {
+		t.Fatalf("authn must still run for normal requests, ran %d times", authnCalls)
+	}
+	// disabled stream: the path is just a 404
+	if rr := get(newTestServer(nil), "/stream/a/b"); rr.Code != 404 {
+		t.Errorf("stream disabled: %d", rr.Code)
+	}
+}

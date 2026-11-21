@@ -1,6 +1,8 @@
-.PHONY: up down test vet tidy check test-integration test-db promote migrate-up migrate-down db-check dictionary
+.PHONY: openapi worker up down test vet tidy check test-integration test-db promote migrate-up migrate-down db-check dictionary
 
 up:    ; docker compose up --build
+openapi: ; go run ./cmd/openapi   # regenerate docs/openapi.json (go test fails when it is stale)
+worker: ; go run ./cmd/worker   # needs ffmpeg, DATABASE_URL (redxtube_worker) and STORAGE_*
 down:  ; docker compose down
 test:  ; go test ./...
 vet:   ; go vet ./...

@@ -44,6 +44,7 @@ services:
       DB_NAME: ${DB_NAME:-redxtube}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
       MIGRATOR_DB_PASSWORD: ${MIGRATOR_DB_PASSWORD:?set MIGRATOR_DB_PASSWORD in .env}
+      WORKER_DB_PASSWORD: ${WORKER_DB_PASSWORD:-}
     volumes: ["../db/bootstrap:/bootstrap:ro"]
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -53,6 +54,10 @@ services:
         psql -h postgres -U postgres -d postgres -v ON_ERROR_STOP=1 \
           -c "ALTER ROLE redxtube_app PASSWORD '$$APP_DB_PASSWORD'" \
           -c "ALTER ROLE redxtube_migrator PASSWORD '$$MIGRATOR_DB_PASSWORD'"
+        # The worker role only gets a password (and can only log in) when you set WORKER_DB_PASSWORD.
+        if [ -n "$$WORKER_DB_PASSWORD" ]; then
+          psql -h postgres -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE redxtube_worker PASSWORD '$$WORKER_DB_PASSWORD'"
+        fi
     restart: "no"
 
   # Migrations MUST run as redxtube_migrator (not postgres): the API role's privileges come from
@@ -134,6 +139,11 @@ services:
       STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-}
       STORAGE_BUCKET: ${STORAGE_BUCKET:-}
       STORAGE_PATH_STYLE: ${STORAGE_PATH_STYLE:-}
+      # B7: signed HLS. Local default points at this API.
+      STREAM_BASE_URL: ${STREAM_BASE_URL:-http://localhost:8080/stream}
+      PLAYBACK_SIGNING_KEY: ${PLAYBACK_SIGNING_KEY:-}
+      METRICS_ADDR: ${METRICS_ADDR:-}
+
       UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-}
       UPLOAD_PART_SIZE_BYTES: ${UPLOAD_PART_SIZE_BYTES:-}
       UPLOAD_MAX_OPEN: ${UPLOAD_MAX_OPEN:-}
@@ -147,7 +157,58 @@ services:
       reference-data: { condition: service_completed_successfully }
     restart: unless-stopped
 
+  # Media pipeline (ffmpeg): turns uploads into HLS + thumbnails and moves videos PROCESSING -> READY.
+  # Needs object storage, so it is opt-in:  --profile storage (local MinIO)  or  --profile worker (your S3).
+  # Hardened: read-only root fs, no capabilities, no privilege escalation, bounded CPU/RAM. The worker
+  # role cannot read credentials, sessions or identity data (see db/migrations/000008).
+  worker:
+    build: { context: ., dockerfile: Dockerfile.worker }
+    profiles: ["storage", "worker"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgres://redxtube_worker:${WORKER_DB_PASSWORD:-}@postgres:5432/${DB_NAME:-redxtube}?sslmode=disable
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+      STORAGE_PATH_STYLE: ${STORAGE_PATH_STYLE:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+      FFMPEG_THREADS: ${FFMPEG_THREADS:-0}
+      SCANNER_COMMAND: ${SCANNER_COMMAND:-}
+      METRICS_ADDR: ${WORKER_METRICS_ADDR:-}
+      # Phase 6 limits and encoding profile: empty means the built-in default (see .env.example)
+      WORKER_MAX_DURATION_SECONDS: ${WORKER_MAX_DURATION_SECONDS:-}
+      WORKER_MAX_SHORT_SIDE: ${WORKER_MAX_SHORT_SIDE:-}
+      WORKER_MAX_LONG_SIDE: ${WORKER_MAX_LONG_SIDE:-}
+      WORKER_MAX_FPS: ${WORKER_MAX_FPS:-}
+      WORKER_MAX_STREAMS: ${WORKER_MAX_STREAMS:-}
+      WORKER_MIN_FREE_MB: ${WORKER_MIN_FREE_MB:-}
+      FFMPEG_PRESET: ${FFMPEG_PRESET:-}
+      WORKER_SEGMENT_SECONDS: ${WORKER_SEGMENT_SECONDS:-}
+      WORKER_AUDIO_KBPS: ${WORKER_AUDIO_KBPS:-}
+      WORKER_THUMBNAILS: ${WORKER_THUMBNAILS:-}
+      WORKER_LADDER: ${WORKER_LADDER:-}
+      WORKER_PROFILE_VERSION: ${WORKER_PROFILE_VERSION:-}
+      WORKER_FAILED_OUTPUT_RETENTION: ${WORKER_FAILED_OUTPUT_RETENTION:-}
+    depends_on:
+      redis: { condition: service_healthy }
+      reference-data: { condition: service_completed_successfully }
+    volumes: [workdata:/work]
+    tmpfs: ["/tmp"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2
+    stop_grace_period: 60s
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:
   miniodata:
+  workdata:

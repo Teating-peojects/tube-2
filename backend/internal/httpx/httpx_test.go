@@ -193,3 +193,16 @@ func TestLoggerWrapperSupportsHijack(t *testing.T) {
 		t.Fatal("WebSocket upgrades need the logging wrapper to implement http.Hijacker")
 	}
 }
+
+func TestLogPathHidesStreamTokens(t *testing.T) {
+	cases := map[string]string{
+		"/stream/1900000000.abcdef/hls/x/master.m3u8": "/stream/<token>/hls/x/master.m3u8",
+		"/stream/secret":   "/stream/<token>",
+		"/api/v1/videos/1": "/api/v1/videos/1",
+	}
+	for in, want := range cases {
+		if got := LogPath(in); got != want {
+			t.Errorf("LogPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

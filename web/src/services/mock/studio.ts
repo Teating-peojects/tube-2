@@ -13,7 +13,7 @@ function page<T>(list: T[], cursor?: string, size = 10): Paginated<T> {
 }
 
 // ---- Upload (simulated) ----
-const sessions = new Map<string, { t0: number | null; published: boolean; init?: UploadInit }>();
+const sessions = new Map<string, { t0: number | null; published: boolean; cancelled?: boolean; init?: UploadInit }>();
 
 export const mockPut: PutPart = (blob, _url, onProgress, signal) =>
   new Promise((resolve, reject) => {
@@ -48,11 +48,18 @@ export async function mockStatus(id: string): Promise<ServerUploadStatus> {
   await wait(150);
   const s = sessions.get(id);
   if (!s?.t0) throw new ApiError(404, "", "not_found");
+  if (s.cancelled) return { status: "failed", progress: 0, thumbnails: [], error: "Processing was cancelled." };
   if (s.published) return { status: "published", progress: 100, thumbnails: [] };
   const dt = (Date.now() - s.t0) / 1000;
   if (dt < 4) return { status: "processing", progress: Math.round((dt / 4) * 100), thumbnails: [] };
   if (dt < 9) return { status: "encoding", progress: Math.round(((dt - 4) / 5) * 100), thumbnails: [] };
   return { status: "ready", progress: 100, thumbnails: [] };
+}
+export async function mockCancelProcessing(videoId: string) {
+  await wait(150);
+  const s = sessions.get(videoId.replace(/^new-/, ""));
+  if (!s?.t0 || s.published || (Date.now() - s.t0) / 1000 >= 9) throw new ApiError(409, "Not processing", "invalid_state"); // already ready: nothing to cancel
+  s.cancelled = true;
 }
 export async function mockAsset() { await wait(250); return `asset-${Date.now()}`; }
 export async function mockSaveDraft() { await wait(300); }

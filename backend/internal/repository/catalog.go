@@ -200,3 +200,15 @@ ORDER BY v.published_at DESC, v.id DESC LIMIT $1`, limit)
 	}
 	return out, rows.Err()
 }
+
+// VideoServable reports whether a video's HLS may be streamed right now: finished, not removed by
+// moderation and not deleted. It backs the stream gate, so a takedown stops playback quickly.
+func (r *Catalog) VideoServable(ctx context.Context, id string) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `SELECT status IN ('READY', 'PUBLISHED') AND moderation_status <> 'REMOVED' AND deleted_at IS NULL
+FROM videos WHERE id = $1::uuid`, id).Scan(&ok)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return ok, err
+}

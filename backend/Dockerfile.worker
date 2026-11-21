@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+# Media worker: Go binary + ffmpeg/ffprobe. Runs unprivileged; see docs/worker.md for the compose hardening.
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+COPY . .
+# First build resolves go.sum; commit the generated go.sum afterwards for reproducible builds.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
+
+FROM alpine:3.20
+RUN apk add --no-cache ffmpeg ca-certificates tzdata \
+ && adduser -D -u 10001 worker \
+ && mkdir -p /work && chown worker:worker /work
+COPY --from=build /out/worker /usr/local/bin/worker
+USER worker
+ENV WORKER_WORKDIR=/work WORKER_ALIVE_FILE=/tmp/worker.alive
+VOLUME ["/work"]
+HEALTHCHECK --interval=30s --timeout=4s --start-period=15s --retries=3 CMD ["worker", "healthcheck"]
+ENTRYPOINT ["worker"]

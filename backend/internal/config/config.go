@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -70,7 +71,16 @@ type Config struct {
 	TrustProxyHeaders   bool   // honour CF-Connecting-IP / X-Forwarded-For (only behind a trusted proxy)
 	Mail                MailConfig
 	Storage             StorageConfig
-	Upload              UploadConfig
+	// Playback (B7): HLS is served through signed, expiring URLs. StreamBaseURL is where players
+	// reach the stream handler, for example https://api.redxtube.com/stream. Empty = HLS URLs are
+	// the plain public CDN_URL ones (development only). PlaybackKey overrides the key derived from
+	// AuthSecret (set it when an edge/CDN verifies tokens too).
+	StreamBaseURL string
+	// MetricsAddr, when set (host:port), serves /metrics on a separate listener. Keep it internal.
+	MetricsAddr string
+	PlaybackKey []byte
+
+	Upload UploadConfig
 }
 
 func (c Config) IsProduction() bool { return c.Env == "production" }
@@ -270,6 +280,39 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 	c.Storage = st
+
+	if a := get("METRICS_ADDR", ""); a != "" {
+		if _, port, err := net.SplitHostPort(a); err != nil {
+			fail("METRICS_ADDR must be host:port, for example 127.0.0.1:9090 (got %q)", a)
+		} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+			fail("METRICS_ADDR port must be 1-65535 (got %q)", a)
+		} else {
+			c.MetricsAddr = a
+		}
+	}
+
+	// ----- playback (B7) -----
+	if v := strings.TrimRight(get("STREAM_BASE_URL", ""), "/"); v != "" {
+		u, err := url.Parse(v)
+		switch {
+		case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "":
+			fail("STREAM_BASE_URL must look like https://host[/path] (got %q)", v)
+		case c.IsProduction() && u.Scheme != "https":
+			fail("STREAM_BASE_URL must be https in production")
+		default:
+			c.StreamBaseURL = v
+		}
+	}
+	if k := get("PLAYBACK_SIGNING_KEY", ""); k != "" {
+		if len(k) < 32 {
+			fail("PLAYBACK_SIGNING_KEY must be at least 32 characters (openssl rand -base64 48)")
+		} else {
+			c.PlaybackKey = []byte(k)
+		}
+	}
+	if c.IsProduction() && c.Storage.Enabled() && c.StreamBaseURL == "" {
+		fail("STREAM_BASE_URL is required in production when STORAGE_* is set: HLS must be served through signed URLs, not a public bucket")
+	}
 
 	// ----- upload limits -----
 	up := UploadConfig{MaxBytes: 5 << 30, PartSize: 16 << 20, MaxOpen: 5, SessionTTL: 24 * time.Hour, MaxRetries: 3,

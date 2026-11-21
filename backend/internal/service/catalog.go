@@ -18,6 +18,7 @@ import (
 	"github.com/redxtube/api/internal/media"
 	"github.com/redxtube/api/internal/model"
 	"github.com/redxtube/api/internal/pagination"
+	"github.com/redxtube/api/internal/playback"
 	"github.com/redxtube/api/internal/repository"
 )
 
@@ -65,6 +66,7 @@ type Catalog struct {
 	urls   media.URLs
 	now    func() time.Time
 	viewer ViewerData
+	signer *playback.Signer
 }
 
 func NewCatalog(store Store, urls media.URLs) *Catalog {
@@ -73,6 +75,25 @@ func NewCatalog(store Store, urls media.URLs) *Catalog {
 
 // WithViewerData enables isSubscribed / reaction for signed-in viewers.
 func (s *Catalog) WithViewerData(v ViewerData) *Catalog { s.viewer = v; return s }
+
+// WithPlayback turns HLS keys into signed, expiring stream URLs (B7). Without it the plain public
+// CDN URL is returned (development).
+func (s *Catalog) WithPlayback(sg *playback.Signer) *Catalog { s.signer = sg; return s }
+
+// streamURL is the URL a player gets for a video. It is only ever built for a request that already
+// passed the age gate and the visibility rules in VideoDetail.
+func (s *Catalog) streamURL(videoID string, hlsKey *string) *string {
+	if hlsKey == nil || *hlsKey == "" {
+		return nil
+	}
+	if s.signer == nil {
+		return s.urls.Asset(hlsKey)
+	}
+	if u := s.signer.URL(videoID, *hlsKey); u != "" {
+		return &u
+	}
+	return nil
+}
 
 // viewerID returns the signed-in user's id (nil when anonymous).
 func viewerID(ctx context.Context) *string {
@@ -294,7 +315,7 @@ func (s *Catalog) VideoDetail(ctx context.Context, id string, viewer *string) (m
 			caps = append(caps, model.Caption{Lang: c.Lang, Label: c.Label, URL: *u})
 		}
 	}
-	stream := s.urls.Asset(d.HLSKey) // B7 replaces this with signed/tokenized playback URLs
+	stream := s.streamURL(d.ID, d.HLSKey)
 	out := model.VideoDetail{
 		ID: v.ID, Title: v.Title, ThumbnailURL: v.ThumbnailURL, DurationSec: v.DurationSec, Quality: v.Quality,
 		Views: v.Views, PublishedAt: v.PublishedAt, IsLive: v.IsLive,

@@ -482,14 +482,14 @@ func TestSweepFreesAbortedStorage(t *testing.T) {
 	if len(st.abortedIDs) != 1 || st.abortedIDs[0] != "prov-a" {
 		t.Errorf("the multipart upload must be aborted by its provider id: %v", st.abortedIDs)
 	}
-	want := []string{"uploads/" + vidID + "/", "thumbs/" + vidID + "/", "captions/" + vidID + "/"}
+	want := []string{"uploads/" + vidID + "/", "thumbs/" + vidID + "/", "captions/" + vidID + "/", "hls/" + vidID + "/"}
 	if strings.Join(st.prefixes, ",") != strings.Join(want, ",") {
 		t.Errorf("deleted prefixes %v, want %v", st.prefixes, want)
 	}
 	if len(db.marked) != 1 || db.marked[0] != "a" || len(db.failed) != 0 {
 		t.Errorf("marked=%v failed=%v", db.marked, db.failed)
 	}
-	if ctr.get("cleanup_sessions") != 1 || ctr.get("cleanup_objects_deleted") != 3 {
+	if ctr.get("cleanup_sessions") != 1 || ctr.get("cleanup_objects_deleted") != 4 {
 		t.Errorf("counters: %v", ctr.m)
 	}
 }

@@ -1,4 +1,4 @@
-# Media worker (B6)
+# Media worker (Phase 6)
 
 `cmd/worker` turns an uploaded original into everything the player and the catalogue need. It is a
 separate process from the API (it runs ffmpeg, which is CPU-heavy and parses untrusted files) and
@@ -38,6 +38,31 @@ keyframes are forced on a time grid so all renditions switch cleanly. Segments a
 SHORT: <= 60 s and <= 200 MiB. LONG: <= 60 min and <= 5 GiB. Short side <= 1080 and long side <= 1920
 (larger sources are rejected with `resolution_too_high`). Containers: MP4/MOV/WebM. Codecs: H.264,
 HEVC, VP8, VP9, AV1.
+
+## Controls and status (Phase 6)
+
+| Route | Who | What |
+|---|---|---|
+| `GET /api/v1/videos/{id}/processing` | owner or MODERATOR+ | `status` (`queued`, `processing`, `ready`, `published`, `failed`, `cancelled`, `removed`), `stage` (`inspecting`, `thumbnails`, `encoding`, `packaging`), `progress`, `errorCode` + `message`, `renditions`, `thumbnails`, `profile`, `canCancel`, `canRetry`. Never contains keys, paths, URLs or log text. |
+| `POST /api/v1/studio/videos/{id}/processing/cancel` | owner or MODERATOR+ | stops a `PROCESSING` video; jobs become `CANCELLED`, the video `FAILED`; a running ffmpeg is killed at the next heartbeat; audited |
+| `POST /api/v1/admin/videos/{id}/processing/retry` | MODERATOR+ (reason required) | re-queues a `FAILED` video from `METADATA`; needs a completed upload, refuses removed videos; audited with the previous error |
+
+The creator-facing sentence for a failure comes from an allow-list (`service/processing_messages.go`); internal conditions
+(ffmpeg, storage, scanner) always show the generic text. Spec state names vs the stored ones: `processing/docs/PHASE_6_DECISIONS.md`.
+
+## Output validation and verification
+
+The package is validated locally **before the first upload** (playlist well-formed and ended, every segment present, non-empty and
+named `seg_NNNNN.ts`, durations consistent, total within max(2 s, 10%) of the source), the master playlist is validated against
+the planned renditions, every uploaded object is **verified by size** (`Head`), and the finalize transaction re-checks the video
+(still `PROCESSING`, not deleted or removed) and the hash blocklist before setting `READY`. Processing never publishes.
+
+## Cleanup
+
+Scratch directories are removed on success, failure and cancel (and after 24 h as a safety net). The partial `hls/` output of a
+video that stayed `FAILED` for `WORKER_FAILED_OUTPUT_RETENTION` (24 h) is removed by a claim-and-delete pass every 10 minutes. The
+original upload and generated thumbnails are never removed by the worker. Aborting or deleting an unpublished video also removes
+`hls/` through the Phase 5 sweeper. See [worker-recovery.md](worker-recovery.md).
 
 ## Failure handling
 
@@ -100,7 +125,21 @@ integration point instead:
 | `WORKER_POLL_INTERVAL` / `WORKER_STALE_AFTER` / `WORKER_SHUTDOWN_GRACE` | 3s / 2m / 30s | durations |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | `ffmpeg`, `ffprobe` | binaries |
 | `SCANNER_COMMAND` | empty | upload scanner, see above |
-| `METRICS_ADDR` | empty | `host:port` for `/metrics`, internal only ([observability.md](observability.md)) |
+| `METRICS_ADDR` | empty | `host:port` for `/metrics`, `/health` and `/ready`, internal only ([observability.md](observability.md)) |
+| `WORKER_MAX_DURATION_SECONDS` | 3600 | longest accepted video (1 s to 24 h) |
+| `WORKER_MAX_SHORT_SIDE` / `WORKER_MAX_LONG_SIDE` | 1080 / 1920 | source size limits; the database allows at most these values |
+| `WORKER_MAX_FPS` / `WORKER_MAX_STREAMS` | 120 / 16 | sources above these are rejected (outputs are capped at 60 fps) |
+| `WORKER_MIN_FREE_MB` | 1024 | free scratch space that must remain after a download; below it a job waits (`disk_full`) |
+| `FFMPEG_PRESET` | `veryfast` | x264 preset (`ultrafast` to `slow`) |
+| `WORKER_SEGMENT_SECONDS` | 6 | HLS segment length, 2 to 10 |
+| `WORKER_AUDIO_KBPS` / `WORKER_THUMBNAILS` | 128 / 5 | audio bitrate; candidate thumbnails per video (1 to 6) |
+| `WORKER_LADDER` | `360:800,480:1400,720:2800,1080:5000` | short side : video kbps; only 360, 480, 720, 1080 exist in the database; **requires a new `WORKER_PROFILE_VERSION`** |
+| `WORKER_PROFILE_VERSION` | `h264-aac-hls-v1` | stored on each video as `processing_profile` |
+| `WORKER_FAILED_OUTPUT_RETENTION` | `24h` | how long partial output of failed videos is kept |
+
+An unset or empty variable keeps the default (compose passes unset variables as empty strings). Out-of-range or inconsistent values
+(raising a limit past what the database enforces, an unknown preset, a ladder without a profile version) stop the worker at startup
+with a message; this is tested (`cmd/worker/limits_test.go`).
 
 Scale by adding replicas, not by raising `WORKER_CONCURRENCY`: ffmpeg already uses all cores.
 

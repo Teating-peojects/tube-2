@@ -1097,7 +1097,8 @@ func (s *Upload) freeStorage(ctx context.Context, c repository.ClosedUpload) (in
 		return 0, errors.New("unexpected video id " + c.VideoID)
 	}
 	total := 0
-	for _, dir := range []string{"uploads/", "thumbs/", "captions/"} {
+	// hls/ holds the renditions the media worker (Phase 6) produced for a processed, never published video
+	for _, dir := range []string{"uploads/", "thumbs/", "captions/", "hls/"} {
 		n, err := s.store.DeletePrefix(ctx, dir+c.VideoID+"/")
 		total += n
 		if err != nil {

@@ -136,7 +136,7 @@ Handler -> Service -> Repository -> Database. No business logic in handlers.
 | B3 Auth + age gate | done: [security/auth.md](security/auth.md) |
 | B4 Social | done: reactions, subscriptions, comments (pin, replies, review mode), views/progress/history, watch later, liked, playlists, block / not interested, reports |
 | B5 Upload | done: direct-to-storage multipart, server-side verification, drafts, thumbnails, captions, consent record, publish |
-| B6 FFmpeg-HLS worker | done: `cmd/worker` (METADATA, THUMBNAIL, TRANSCODE, HLS) on the PostgreSQL job queue, 360p-1080p HLS, tested with real ffmpeg, PostgreSQL and an S3 API: [backend/docs/worker.md](backend/docs/worker.md) |
+| B6 FFmpeg-HLS worker (Phase 6) | partially complete: `cmd/worker` (METADATA, THUMBNAIL, TRANSCODE, HLS) with configurable limits/profile, output validation and verification, cancel/retry/status APIs, cleanup, metrics; tested with real ffmpeg, PostgreSQL and an S3 API; **not run in Docker or against real S3/MinIO**: [processing/docs/PHASE_6_COMPLETION_REPORT.md](processing/docs/PHASE_6_COMPLETION_REPORT.md), [backend/docs/worker.md](backend/docs/worker.md), [backend/docs/worker-recovery.md](backend/docs/worker-recovery.md) |
 | B7 Playback (signed HLS) | done: signed 6 h stream URLs from `GET /videos/{id}`, token-verifying stream handler with takedown gate, tokens never logged, tested end to end with a real ffmpeg player: [backend/docs/playback.md](backend/docs/playback.md) |
 | B8 Notifications + Studio + realtime | done: inbox, unread count, Studio overview/analytics/videos/comments, WebSocket over Redis pub/sub |
 | B9 Moderation + admin | done (API only, no UI): report queue, actions, restore, users, audit, hash blocklist, auto-restrict |

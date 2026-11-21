@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -25,7 +24,7 @@ func hlsArgs(in, outDir string, r Rendition, p Probe, prof Profile, threads int)
 	}
 	vk := strconv.Itoa(r.VideoKbps)
 	a := []string{"-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-		"-protocol_whitelist", "file", "-i", in,
+		"-protocol_whitelist", "file", "-format_whitelist", demuxerWhitelist, "-i", "file:" + in,
 		"-map", "0:v:0", "-map_metadata", "-1", "-map_chapters", "-1", "-sn", "-dn",
 		"-vf", vf,
 		"-c:v", "libx264", "-preset", prof.Preset, "-profile:v", "high", "-level:v", r.Level,
@@ -49,7 +48,7 @@ func hlsArgs(in, outDir string, r Rendition, p Probe, prof Profile, threads int)
 // thumbArgs grabs one JPEG frame at the given time (fast seek before the input).
 func thumbArgs(in, out string, at float64, w int) []string {
 	return []string{"-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-		"-protocol_whitelist", "file", "-ss", strconv.FormatFloat(at, 'f', 3, 64), "-i", in,
+		"-protocol_whitelist", "file", "-format_whitelist", demuxerWhitelist, "-ss", strconv.FormatFloat(at, 'f', 3, 64), "-i", "file:" + in,
 		"-map", "0:v:0", "-map_metadata", "-1", "-frames:v", "1",
 		"-vf", fmt.Sprintf("scale='min(%d,iw)':-2", w), "-q:v", "3", out}
 }
@@ -82,14 +81,14 @@ func runFFmpeg(ctx context.Context, bin string, args []string, timeout time.Dura
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, bin, args...)
-	detach(cmd)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	isolate(cmd)
+	stderr := &tailWriter{max: 2048} // only the tail is ever shown, so only the tail is kept
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err() // shutting down: not the file's fault
 		}
-		tail := stderr.Bytes()
+		tail := stderr.buf
 		if len(tail) > 1200 {
 			tail = tail[len(tail)-1200:]
 		}

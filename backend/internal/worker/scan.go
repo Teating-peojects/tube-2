@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -30,6 +29,9 @@ type Scanner interface {
 type ExecScanner struct {
 	Args    []string
 	Timeout time.Duration
+	// Env lists the only KEY=VALUE pairs the scanner receives besides a minimal PATH and locale: the worker's own
+	// environment (database and storage credentials) is never passed on.
+	Env []string
 }
 
 func ParseScannerCommand(s string) (*ExecScanner, error) {
@@ -57,9 +59,9 @@ func (e *ExecScanner) Scan(ctx context.Context, path string) (bool, string, erro
 	cctx, cancel := context.WithTimeout(ctx, e.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, args[0], args[1:]...)
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	detach(cmd)
+	out := &tailWriter{max: 8192}
+	cmd.Stdout, cmd.Stderr = out, out
+	isolate(cmd, e.Env...)
 	err := cmd.Run()
 	tail := sanitizeDiag(out.String())
 	if err == nil {

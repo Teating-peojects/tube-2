@@ -3,11 +3,14 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ffprobe format_name -> container. Anything else (hls, concat, image2, ...) is rejected before
@@ -145,19 +148,72 @@ func (p Probe) Validate(size int64) (videoType string, seconds int, err *JobErro
 	return DefaultPolicy().Validate(p, size)
 }
 
-// ProbeFile runs ffprobe on a local file. Only the file protocol is allowed, so a crafted
-// "video" that is really a playlist cannot make ffprobe read other files or reach the network.
+// probeTimeout bounds one ffprobe run; a variable so tests can shorten it. probeMaxOutput bounds the JSON it may print.
+var probeTimeout = 60 * time.Second
+
+const probeMaxOutput = 4 << 20
+
+// probeArgs is the whole ffprobe command line. "file:" keeps a path from being read as an option or a protocol; the two
+// whitelists mean a playlist, a concat script or a reference movie cannot make ffprobe open another file or the network.
+func probeArgs(path string) []string {
+	return []string{"-v", "error", "-probesize", "10000000", "-analyzeduration", "10000000",
+		"-format_whitelist", demuxerWhitelist, "-protocol_whitelist", "file",
+		"-print_format", "json", "-show_format", "-show_streams", "-i", "file:" + path}
+}
+
+func unreadable(detail string) *JobError {
+	je := permanent("invalid_file", "That file could not be read as a video")
+	je.Err = errors.New(detail)
+	return je
+}
+
+// ProbeFile runs ffprobe on a local file. The child gets a scrubbed environment and its own process group, is
+// killed at the timeout and may print only a bounded amount. Only the file protocol and the allowed demuxers are
+// permitted, so a crafted "video" that is really a playlist cannot make ffprobe read other files or reach the
+// network. A file whose declared structure is longer than the file itself is refused as damaged.
 func ProbeFile(ctx context.Context, ffprobe, path, ext string) (Probe, error) {
-	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-protocol_whitelist", "file",
-		"-print_format", "json", "-show_format", "-show_streams", path)
-	detach(cmd)
-	out, err := cmd.Output()
-	if err != nil {
+	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	out := &boundedWriter{max: probeMaxOutput, stop: cancel}
+	errOut := &tailWriter{max: 4096}
+	cmd := exec.CommandContext(pctx, ffprobe, probeArgs(path)...)
+	isolate(cmd)
+	cmd.Stdout, cmd.Stderr = out, errOut
+	runErr := cmd.Run()
+	switch {
+	case ctx.Err() != nil:
+		return Probe{}, ctx.Err() // shutting down or cancelled: not the file's fault
+	case out.exceeded:
+		return Probe{}, unreadable("ffprobe output exceeded the limit")
+	case errors.Is(pctx.Err(), context.DeadlineExceeded):
+		return Probe{}, transient("ffprobe_failed", fmt.Errorf("ffprobe exceeded %s", probeTimeout))
+	}
+	if runErr != nil {
 		var ee *exec.ExitError
-		if asExit(err, &ee) {
-			return Probe{}, permanent("invalid_file", "That file could not be read as a video")
+		if asExit(runErr, &ee) {
+			return Probe{}, unreadable("ffprobe failed: " + sanitizeDiag(errOut.String()))
 		}
+		return Probe{}, runErr
+	}
+	pr, err := ParseProbe(out.buf.Bytes(), ext)
+	if err != nil {
 		return Probe{}, err
 	}
-	return ParseProbe(out, ext)
+	if truncationHint(errOut.String()) {
+		return Probe{}, unreadable("ffprobe reports a truncated file: " + sanitizeDiag(errOut.String()))
+	}
+	if st, err := os.Stat(path); err == nil {
+		var bad bool
+		var why string
+		switch pr.Container {
+		case "mp4", "mov":
+			bad, why = isoTruncated(path, st.Size())
+		case "webm", "mkv": // Matroska and WebM share one ffprobe format; the label depends on the extension
+			bad, why = mkvTruncated(path, st.Size())
+		}
+		if bad {
+			return Probe{}, unreadable("truncated or damaged container: " + why)
+		}
+	}
+	return pr, nil
 }

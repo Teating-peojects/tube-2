@@ -112,12 +112,12 @@ func (p *Pipeline) verify(ctx context.Context, key string, size int64) error {
 // original returns the local path of the original, downloading it when it is not cached. With
 // hash=true it always downloads fresh and returns the SHA-256 of what storage really holds.
 func (p *Pipeline) original(ctx context.Context, videoID string, v VideoRow, hash bool) (string, []byte, error) {
-	ext := strings.ToLower(filepath.Ext(v.OriginalKey))
 	d := p.dir(videoID)
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return "", nil, transient("workdir", err)
 	}
-	path := filepath.Join(d, "original"+ext)
+	// The local copy has no extension: what the uploader called the file must never steer which demuxer reads it.
+	path := filepath.Join(d, "original")
 	if !hash {
 		if st, err := os.Stat(path); err == nil && st.Size() == v.Size {
 			return path, nil, nil

@@ -274,8 +274,8 @@ func TestPipelineWaitsInsteadOfFillingTheDisk(t *testing.T) {
 	if !errors.As(err, &je) || je.Code != "disk_full" || je.Permanent {
 		t.Fatalf("a full disk must be a retryable condition, not the upload's fault: %v", err)
 	}
-	if _, serr := os.Stat(filepath.Join(p.dir(vid), "original.mp4")); serr == nil {
-		t.Error("the download started anyway")
+	if ents, _ := os.ReadDir(p.dir(vid)); len(ents) != 0 {
+		t.Errorf("the download started anyway: %d entries in the work dir", len(ents))
 	}
 }
 

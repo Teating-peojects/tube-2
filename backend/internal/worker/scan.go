@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -75,4 +76,38 @@ func (e *ExecScanner) Scan(ctx context.Context, path string) (bool, string, erro
 		return false, "", ctx.Err()
 	}
 	return false, "", fmt.Errorf("scanner failed: %w: %s", err, tail)
+}
+
+var scannerEnvKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+
+// ParseScannerEnv parses SCANNER_ENV, a comma-separated list of KEY=VALUE pairs that a scanner is allowed to see
+// (for example "CLAMD_CONF=/etc/clamd.conf,LANG=C"). Values must not contain commas. The worker's own environment
+// is never passed to a scanner; this list is the only way in.
+func ParseScannerEnv(s string) ([]string, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	if len(parts) > 32 {
+		return nil, errors.New("at most 32 variables")
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		k, v, ok := strings.Cut(p, "=")
+		switch {
+		case !ok || k == "":
+			return nil, fmt.Errorf("%q is not KEY=VALUE", p)
+		case !scannerEnvKey.MatchString(k):
+			return nil, fmt.Errorf("%q is not a valid variable name", k)
+		case seen[k]:
+			return nil, fmt.Errorf("%s is listed twice", k)
+		case strings.ContainsAny(v, "\x00\r\n"):
+			return nil, fmt.Errorf("the value of %s contains a control character", k)
+		}
+		seen[k] = true
+		out = append(out, k+"="+v)
+	}
+	return out, nil
 }

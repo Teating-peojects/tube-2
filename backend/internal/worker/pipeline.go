@@ -33,6 +33,8 @@ type Pipeline struct {
 	FFmpeg  string
 	FFprobe string
 	Threads int
+	// Limits cap the priority and memory of every ffmpeg run (zero value: no limits).
+	Limits Limits
 	// Scanner is optional (B10). When set it runs on every original before ffprobe; fail-closed.
 	Scanner Scanner
 	// Policy and Profile: zero values mean DefaultPolicy / DefaultProfile.
@@ -236,14 +238,14 @@ func (p *Pipeline) thumbnails(ctx context.Context, j Job, v VideoRow) error {
 			w, h, l, err := inspectJPEG(out)
 			return cand{file: out, w: w, h: h, luma: l}, err
 		}
-		err := runFFmpeg(ctx, p.FFmpeg, thumbArgs(path, out, at, prof.ThumbWidth), 2*time.Minute)
+		err := runFFmpegLimited(ctx, p.FFmpeg, thumbArgs(path, out, at, prof.ThumbWidth), 2*time.Minute, p.Limits)
 		c, ierr := inspect()
 		if err != nil || ierr != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			// seeking past the last decodable frame, or a corrupt frame: fall back to the first frame
-			if err2 := runFFmpeg(ctx, p.FFmpeg, thumbArgs(path, out, 0, prof.ThumbWidth), 2*time.Minute); err2 != nil {
+			if err2 := runFFmpegLimited(ctx, p.FFmpeg, thumbArgs(path, out, 0, prof.ThumbWidth), 2*time.Minute, p.Limits); err2 != nil {
 				return asJobError(err2)
 			}
 			if c, ierr = inspect(); ierr != nil {
@@ -315,7 +317,7 @@ func (p *Pipeline) transcode(ctx context.Context, j Job, v VideoRow) error {
 		if err := os.MkdirAll(out, 0o700); err != nil {
 			return transient("workdir", err)
 		}
-		if err := runFFmpeg(ctx, p.FFmpeg, hlsArgs(path, out, r, pr, prof, p.Threads), encodeTimeout(float64(meta.Duration))); err != nil {
+		if err := runFFmpegLimited(ctx, p.FFmpeg, hlsArgs(path, out, r, pr, prof, p.Threads), encodeTimeout(float64(meta.Duration)), p.Limits); err != nil {
 			return asJobErrorCtx(ctx, err)
 		}
 		// Validate the package locally BEFORE uploading anything: a broken encode is retried, never published.

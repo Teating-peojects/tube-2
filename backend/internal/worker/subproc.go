@@ -77,3 +77,9 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 }
 
 func (w *tailWriter) String() string { return string(w.buf) }
+
+// Limits are optional resource limits for a heavy child process (ffmpeg). The zero value means none.
+type Limits struct {
+	Nice     int // niceness of the child, 1-19 (a lower priority than the API and the database)
+	MemoryMB int // address-space limit in MiB (0 = none; ffmpeg maps a lot of virtual memory, so choose generously)
+}

@@ -76,15 +76,27 @@ func encodeTimeout(duration float64) time.Duration {
 	return 20*time.Minute + time.Duration(2*duration)*time.Second
 }
 
-// runFFmpeg runs a command and returns the tail of stderr on failure.
+// runFFmpeg runs a command without resource limits and returns the tail of stderr on failure.
 func runFFmpeg(ctx context.Context, bin string, args []string, timeout time.Duration) error {
+	return runFFmpegLimited(ctx, bin, args, timeout, Limits{})
+}
+
+// runFFmpegLimited is runFFmpeg with the child's priority and memory limited.
+func runFFmpegLimited(ctx context.Context, bin string, args []string, timeout time.Duration, lim Limits) error {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, bin, args...)
 	isolate(cmd)
 	stderr := &tailWriter{max: 2048} // only the tail is ever shown, so only the tail is kept
 	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Start()
+	if err == nil {
+		if lim != (Limits{}) {
+			_ = applyLimits(cmd.Process.Pid, lim) // best effort: a failed limit must not fail the encode
+		}
+		err = cmd.Wait()
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err() // shutting down: not the file's fault
 		}

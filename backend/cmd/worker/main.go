@@ -127,6 +127,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	nice, err := envInt("FFMPEG_NICE", 10)
+	if err != nil || nice < 0 || nice > 19 {
+		return fmt.Errorf("FFMPEG_NICE must be 0-19 (0 = no change)")
+	}
+	memMB, err := envInt("FFMPEG_MEMORY_MB", 0)
+	if err != nil || memMB < 0 || (memMB != 0 && memMB < 512) {
+		return fmt.Errorf("FFMPEG_MEMORY_MB must be 0 (off) or at least 512")
+	}
+	limits := worker.Limits{Nice: nice, MemoryMB: memMB}
 	maxConns, err := envInt("DB_MAX_CONNS", conc+3)
 	if err != nil {
 		return err
@@ -167,7 +176,7 @@ func run() error {
 
 	pipe := &worker.Pipeline{
 		Store: nil, Storage: store, Log: log, WorkDir: workDir,
-		FFmpeg: env("FFMPEG_PATH", "ffmpeg"), FFprobe: env("FFPROBE_PATH", "ffprobe"), Threads: threads,
+		FFmpeg: env("FFMPEG_PATH", "ffmpeg"), FFprobe: env("FFPROBE_PATH", "ffprobe"), Threads: threads, Limits: limits,
 		Policy: policy, Profile: profile,
 	}
 	// Realtime is a convenience (the UI polls the upload status too): Redis is optional here.
@@ -190,8 +199,13 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("SCANNER_COMMAND: %w", err)
 		}
+		if sc.Env, err = worker.ParseScannerEnv(env("SCANNER_ENV", "")); err != nil {
+			return fmt.Errorf("SCANNER_ENV: %w", err)
+		}
 		pipe.Scanner = sc
-		log.Info("upload scanner enabled (fail-closed)", "command", sc.Args[0])
+		log.Info("upload scanner enabled (fail-closed)", "command", sc.Args[0], "env_vars", len(sc.Env))
+	} else if env("SCANNER_ENV", "") != "" {
+		return fmt.Errorf("SCANNER_ENV is set but SCANNER_COMMAND is not")
 	} else if env("APP_ENV", "development") == "production" {
 		log.Warn("no SCANNER_COMMAND: uploads are NOT scanned for malware/CSAM; plug a scanner in before opening uploads (docs/worker.md)")
 	}

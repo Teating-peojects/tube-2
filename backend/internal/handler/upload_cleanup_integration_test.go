@@ -126,14 +126,14 @@ func TestUploadStorageCleanupAgainstRealDatabase(t *testing.T) {
 		t.Fatalf("a reopened upload must be left alone: %+v", r)
 	}
 
-	// 3. cancelled: the multipart upload and every object of the video (original, thumbnails, captions) go
+	// 3. cancelled: the multipart upload and every object of the video (original, thumbnails, captions, renditions) go
 	if err := svc.Abort(ctx, owner, ci, u1.UploadID); err != nil {
 		t.Fatal(err)
 	}
 	if r := sweep(svc); r.Cleaned != 1 {
 		t.Fatalf("aborted session: %+v", r)
 	}
-	if got := read(u1.UploadID); got.status != "ABORTED" || !got.cleaned || prefixesFor(u1.VideoID) != 3 {
+	if got := read(u1.UploadID); got.status != "ABORTED" || !got.cleaned || prefixesFor(u1.VideoID) != 4 {
 		t.Fatalf("aborted session after the sweep: %+v prefixes=%d", got, prefixesFor(u1.VideoID))
 	}
 
@@ -218,7 +218,7 @@ func TestUploadStorageCleanupAgainstRealDatabase(t *testing.T) {
 	if r := sweep(svc); r.Cleaned != 1 || r.Failed != 0 {
 		t.Fatalf("storage recovered: %+v", r)
 	}
-	if got := read(bad.UploadID); !got.cleaned || got.nextAt != nil || prefixesFor(bad.VideoID) != 3 {
+	if got := read(bad.UploadID); !got.cleaned || got.nextAt != nil || prefixesFor(bad.VideoID) != 4 {
 		t.Fatalf("after recovery: %+v prefixes=%d", got, prefixesFor(bad.VideoID))
 	}
 
@@ -238,7 +238,7 @@ func TestUploadStorageCleanupAgainstRealDatabase(t *testing.T) {
 	if r := sweep(svc); r.Finalized != 1 || r.Cleaned != 1 {
 		t.Fatalf("finalize pass: %+v", r)
 	}
-	if got := read(old.UploadID); got.status != "ABORTED" || !got.cleaned || prefixesFor(old.VideoID) != 3 {
+	if got := read(old.UploadID); got.status != "ABORTED" || !got.cleaned || prefixesFor(old.VideoID) != 4 {
 		t.Fatalf("finalized session: %+v prefixes=%d", got, prefixesFor(old.VideoID))
 	}
 
@@ -246,7 +246,7 @@ func TestUploadStorageCleanupAgainstRealDatabase(t *testing.T) {
 	if got := read(open.UploadID); got != (row{"INITIATED", false, 0, nil}) || prefixesFor(open.VideoID) != 0 {
 		t.Fatalf("the open upload was touched: %+v", got)
 	}
-	for name, want := range map[string]int64{"cleanup_sessions": 6, "cleanup_failed": 2, "upload_expired_finalized": 1, "upload_retry": 2, "cleanup_objects_deleted": 12} {
+	for name, want := range map[string]int64{"cleanup_sessions": 6, "cleanup_failed": 2, "upload_expired_finalized": 1, "upload_retry": 2, "cleanup_objects_deleted": 16} {
 		if got := counters.Get(name); got != want {
 			values, _ := counters.Snapshot()
 			t.Errorf("%s = %d, want %d (all: %v)", name, got, want, values)

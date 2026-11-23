@@ -201,12 +201,15 @@ ORDER BY v.published_at DESC, v.id DESC LIMIT $1`, limit)
 	return out, rows.Err()
 }
 
-// VideoServable reports whether a video's HLS may be streamed right now: finished, not removed by
-// moderation and not deleted. It backs the stream gate, so a takedown stops playback quickly.
+// VideoServable reports whether a video's HLS may be streamed right now: finished, not removed by moderation, not
+// deleted, and its owner still in good standing (ACTIVE, not deleted). The gateway has no viewer, so this is only what
+// holds for everybody; it is what makes a removal, a suspension, a ban or an account deletion stop playback of tokens
+// that were issued earlier (the gateway re-asks within its gate TTL).
 func (r *Catalog) VideoServable(ctx context.Context, id string) (bool, error) {
 	var ok bool
-	err := r.pool.QueryRow(ctx, `SELECT status IN ('READY', 'PUBLISHED') AND moderation_status <> 'REMOVED' AND deleted_at IS NULL
-FROM videos WHERE id = $1::uuid`, id).Scan(&ok)
+	err := r.pool.QueryRow(ctx, `SELECT v.status IN ('READY', 'PUBLISHED') AND v.moderation_status <> 'REMOVED' AND v.deleted_at IS NULL
+  AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
+FROM videos v JOIN users u ON u.id = v.creator_id WHERE v.id = $1::uuid`, id).Scan(&ok)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

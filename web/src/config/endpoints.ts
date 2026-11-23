@@ -71,6 +71,7 @@ export const endpoints = {
     overview: "/api/v1/studio/overview", // GET ?period=7d|28d|90d
     videos: "/api/v1/studio/videos", // GET ?filter&cursor
     video: (id: string) => `/api/v1/studio/videos/${e(id)}`, // PATCH { visibility } | DELETE
+    cancelProcessing: (id: string) => `/api/v1/studio/videos/${e(id)}/processing/cancel`, // POST { reason? } -> 204; 409 = not processing (any more)
     analytics: "/api/v1/studio/analytics", // GET ?period
     comments: "/api/v1/studio/comments", // GET ?filter=all|held&cursor
     commentApprove: (id: string) => `/api/v1/studio/comments/${e(id)}/approve`, // POST

@@ -582,7 +582,7 @@ func (s *Upload) Status(ctx context.Context, p *auth.Principal, uploadID string)
 			}
 		}
 	case u.VideoStatus == "FAILED" || (pr.Failed > 0 && pr.Active == nil):
-		return fail("We couldn't process this video. Try uploading it again.")
+		return fail(failureMessage(pr.FailCode))
 	default:
 		out.Status = "processing"
 		if pr.Active != nil && (*pr.Active == "TRANSCODE" || *pr.Active == "HLS") {
@@ -1097,7 +1097,8 @@ func (s *Upload) freeStorage(ctx context.Context, c repository.ClosedUpload) (in
 		return 0, errors.New("unexpected video id " + c.VideoID)
 	}
 	total := 0
-	for _, dir := range []string{"uploads/", "thumbs/", "captions/"} {
+	// hls/ holds the renditions the media worker (Phase 6) produced for a processed, never published video
+	for _, dir := range []string{"uploads/", "thumbs/", "captions/", "hls/"} {
 		n, err := s.store.DeletePrefix(ctx, dir+c.VideoID+"/")
 		total += n
 		if err != nil {

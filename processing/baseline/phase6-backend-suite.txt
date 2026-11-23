@@ -1,0 +1,27 @@
+=== backend: go vet
+vet exit=0
+=== backend: gofmt
+gofmt files needing format: 0
+=== backend: go test -race (CI-equivalent: no S3 server)
+ok  	github.com/redxtube/api/cmd/worker	1.024s
+ok  	github.com/redxtube/api/internal/auth	2.877s
+ok  	github.com/redxtube/api/internal/captions	1.020s
+ok  	github.com/redxtube/api/internal/config	1.013s
+ok  	github.com/redxtube/api/internal/handler	48.197s
+ok  	github.com/redxtube/api/internal/httpx	1.012s
+ok  	github.com/redxtube/api/internal/mail	1.074s
+ok  	github.com/redxtube/api/internal/media	1.009s
+ok  	github.com/redxtube/api/internal/metrics	1.028s
+ok  	github.com/redxtube/api/internal/pagination	1.010s
+ok  	github.com/redxtube/api/internal/playback	1.011s
+ok  	github.com/redxtube/api/internal/ratelimit	1.382s
+ok  	github.com/redxtube/api/internal/server	1.016s
+ok  	github.com/redxtube/api/internal/service	1.021s
+ok  	github.com/redxtube/api/internal/storage	3.738s
+ok  	github.com/redxtube/api/internal/worker	33.467s
+ok  	github.com/redxtube/api/internal/ws	1.822s
+=== backend: go test -race WITH an S3 API (moto): worker smoke + playback end-to-end
+--- PASS: TestWorkerSmoke (5.36s)
+PASS
+ok  	github.com/redxtube/api/internal/worker	6.389s
+=== ALL BACKEND DONE

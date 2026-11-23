@@ -1,0 +1,25 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+ RUN  v2.1.9 /home/claude/tube-2/web
+
+ ✓ src/features/upload/useUpload.test.tsx (26 tests) 1808ms
+ ✓ src/lib/uploader.test.ts (25 tests) 111ms
+ ✓ src/features/upload/UploadProgress.test.tsx (13 tests) 520ms
+ ✓ src/features/auth/schemas.test.ts (14 tests) 10ms
+ ✓ src/config/upload.test.ts (4 tests) 7ms
+ ✓ src/components/ui/Modal.test.tsx (4 tests) 206ms
+ ✓ src/features/upload/TagInput.test.tsx (3 tests) 282ms
+ ✓ src/lib/auth.test.ts (11 tests) 5ms
+ ✓ src/store/modal.test.ts (3 tests) 4ms
+ ✓ src/features/auth/errors.test.ts (3 tests) 4ms
+ ✓ src/store/toast.test.ts (3 tests) 7ms
+ ✓ src/utils/format.test.ts (5 tests) 310ms
+   ✓ format > formats views compactly 300ms
+ ✓ src/lib/search-params.test.ts (3 tests) 5ms
+ ✓ src/components/ui/Toggle.test.tsx (1 test) 105ms
+
+ Test Files  14 passed (14)
+      Tests  118 passed (118)
+   Start at  19:23:12
+   Duration  27.57s (transform 688ms, setup 1.51s, collect 8.80s, tests 3.38s, environment 8.71s, prepare 1.40s)
+

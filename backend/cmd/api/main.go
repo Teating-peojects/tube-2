@@ -120,6 +120,7 @@ func run() error {
 		ExpiredRetention: cfg.Upload.ExpiredRetention, CleanupDelay: cfg.Upload.CleanupDelay}).WithMetrics(counters)
 	notifRepo := repository.NewNotifications(pool)
 	notifSvc := service.NewNotifications(notifRepo, limiter, log)
+	processingSvc := service.NewProcessing(repository.NewProcessing(pool), limiter, ipKey, log)
 	adminSvc := service.NewAdmin(repository.NewAdmin(pool), limiter, ipKey, log)
 	studioSvc := service.NewStudio(repository.NewStudio(pool), limiter, ipKey, urls, log)
 	cookies := middleware.Cookies{Session: cfg.SessionCookieName, Age: "xh_age", AgeMark: "xh_age_ok", Domain: cfg.CookieDomain, Secure: cfg.CookieSecure}
@@ -138,6 +139,7 @@ func run() error {
 			Notifications: &handler.Notifications{Svc: notifSvc},
 			Studio:        &handler.Studio{Svc: studioSvc, TrustProxy: cfg.TrustProxyHeaders},
 			Admin:         &handler.Admin{Svc: adminSvc, TrustProxy: cfg.TrustProxyHeaders},
+			Processing:    &handler.Processing{Svc: processingSvc, TrustProxy: cfg.TrustProxyHeaders},
 			Realtime:      &handler.Realtime{Hub: hub, Owner: notifRepo, Origins: cfg.CORSOrigins, Log: log},
 			Checks: map[string]handler.Pinger{
 				"postgres": pool,

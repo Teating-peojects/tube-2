@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { CheckCircle, WarningCircle, WifiSlash } from "@phosphor-icons/react/dist/ssr";
 import { Button } from "@/components/ui/Button";
 import type { Progress } from "@/lib/uploader";
@@ -14,9 +15,13 @@ type Props = {
   offline?: boolean;
   /** False when retrying the same file cannot help (the server refused it): offer to choose another file instead. */
   canRetry?: boolean;
+  /** Stops server-side processing while the video is being processed or encoded (hidden when not provided). */
+  onCancelProcessing?: () => void | Promise<void>;
 };
 
-export function UploadProgress({ phase, progress, serverProgress, fileName, error, failedAtProcessing, onCancel, onRetry, onReset, offline = false, canRetry = true }: Props) {
+export function UploadProgress({ phase, progress, serverProgress, fileName, error, failedAtProcessing, onCancel, onRetry, onReset, offline = false, canRetry = true, onCancelProcessing }: Props) {
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const idx = index[phase] ?? -1;
   const uploading = phase === "uploading" || phase === "preparing";
   const pct = phase === "uploading" ? Math.floor((progress.loaded / Math.max(1, progress.total)) * 100)
@@ -61,11 +66,22 @@ export function UploadProgress({ phase, progress, serverProgress, fileName, erro
         ))}
       </ol>
 
+      {cancelError && <p role="alert" className="rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-sm">{cancelError}</p>}
       {failed && error && <p role="alert" className="rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-sm">{error}</p>}
       <div className="flex flex-wrap gap-2">
         {failed && !failedAtProcessing && canRetry && <Button className="h-11" onClick={onRetry}>Retry upload</Button>}
         {failed && !failedAtProcessing && !canRetry && <Button className="h-11" onClick={onReset}>Choose another file</Button>}
         {failed && failedAtProcessing && <Button className="h-11" onClick={onReset}>Upload again</Button>}
+        {(phase === "processing" || phase === "encoding") && onCancelProcessing && (
+          <Button variant="secondary" className="h-11" disabled={cancelling}
+            onClick={async () => {
+              setCancelling(true);
+              setCancelError(null);
+              try { await onCancelProcessing(); } catch { setCancelError("Couldn't cancel processing. Please try again."); } finally { setCancelling(false); }
+            }}>
+            {cancelling ? "Cancelling…" : "Cancel processing"}
+          </Button>
+        )}
         {(uploading || (phase === "failed" && canRetry)) && !failedAtProcessing && <Button variant="secondary" className="h-11" onClick={onCancel}>Cancel</Button>}
       </div>
     </section>

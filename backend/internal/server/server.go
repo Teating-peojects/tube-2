@@ -34,6 +34,8 @@ type Deps struct {
 	Realtime      *handler.Realtime
 	// Admin serves moderation and administration (needs Auth); nil disables it.
 	Admin *handler.Admin
+	// Processing serves cancel/retry/status of video processing (Phase 6); nil disables it.
+	Processing *handler.Processing
 	// Authn resolves the session cookie on every request (required when Auth is set).
 	Authn httpx.Middleware
 }
@@ -70,6 +72,9 @@ func New(d Deps) http.Handler {
 	}
 	if d.Realtime != nil {
 		d.Realtime.Routes(mux)
+	}
+	if d.Processing != nil {
+		d.Processing.Routes(mux)
 	}
 	if d.Admin != nil {
 		d.Admin.Routes(mux)

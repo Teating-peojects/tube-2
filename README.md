@@ -136,7 +136,7 @@ Handler -> Service -> Repository -> Database. No business logic in handlers.
 | B3 Auth + age gate | done: [security/auth.md](security/auth.md) |
 | B4 Social | done: reactions, subscriptions, comments (pin, replies, review mode), views/progress/history, watch later, liked, playlists, block / not interested, reports |
 | B5 Upload | done: direct-to-storage multipart, server-side verification, drafts, thumbnails, captions, consent record, publish |
-| B6 FFmpeg-HLS worker | **not built**: nothing moves an uploaded video from `PROCESSING` to `READY`, so a real upload cannot be published yet |
+| B6 FFmpeg-HLS worker (Phase 6) | partially complete: `cmd/worker` (METADATA, THUMBNAIL, TRANSCODE, HLS) with configurable limits/profile, output validation and verification, cancel/retry/status APIs, cleanup, metrics; tested with real ffmpeg, PostgreSQL and an S3 API; **not run in Docker or against real S3/MinIO**: [processing/docs/PHASE_6_COMPLETION_REPORT.md](processing/docs/PHASE_6_COMPLETION_REPORT.md), [backend/docs/worker.md](backend/docs/worker.md), [backend/docs/worker-recovery.md](backend/docs/worker-recovery.md) |
 | B7 Playback (signed HLS) | not wired: `internal/playback` exists but is unused |
 | B8 Notifications + Studio + realtime | done: inbox, unread count, Studio overview/analytics/videos/comments, WebSocket over Redis pub/sub |
 | B9 Moderation + admin | done (API only, no UI): report queue, actions, restore, users, audit, hash blocklist, auto-restrict |

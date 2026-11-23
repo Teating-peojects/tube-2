@@ -1,0 +1,467 @@
+package worker
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/redxtube/api/internal/auth"
+	"github.com/redxtube/api/internal/storage"
+)
+
+const (
+	cacheImmutable = "public, max-age=31536000, immutable"
+	cachePlaylist  = "public, max-age=300"
+	uploadWorkers  = 6
+)
+
+// Pipeline runs one job. It is safe for concurrent use.
+type Pipeline struct {
+	Store   Store
+	Storage storage.API
+	Log     *slog.Logger
+	WorkDir string
+	FFmpeg  string
+	FFprobe string
+	Threads int
+	// Scanner is optional (B10). When set it runs on every original before ffprobe; fail-closed.
+	Scanner Scanner
+	// Policy and Profile: zero values mean DefaultPolicy / DefaultProfile.
+	Policy  Policy
+	Profile Profile
+	// Free reports free scratch bytes (default: statfs); tests replace it.
+	Free func(dir string) (uint64, error)
+	// OnTranscoded reports TRANSCODE throughput (optional): seconds of source video and the wall time taken.
+	OnTranscoded func(mediaSec float64, elapsed time.Duration)
+	// Notify pushes a realtime event after a commit (optional).
+	Notify func(ctx context.Context, userID, videoID string)
+}
+
+// Run executes the job and returns nil only when the job was completed in the database.
+func (p *Pipeline) Run(ctx context.Context, j Job) error {
+	v, err := p.Store.Video(ctx, j.VideoID)
+	switch {
+	case errors.Is(err, ErrVideoGone):
+		return &JobError{Code: "video_unavailable", Message: "The video no longer exists", Permanent: true, Silent: true, Err: err}
+	case err != nil:
+		return err
+	case v.Moderation == "REMOVED" || v.Status != "PROCESSING":
+		return &JobError{Code: "video_unavailable", Message: "The video can no longer be processed", Permanent: true, Silent: true}
+	case v.OriginalKey == "":
+		return permanent("no_original", "The original file is missing")
+	}
+	switch j.Type {
+	case "METADATA":
+		return p.metadata(ctx, j, v)
+	case "THUMBNAIL":
+		return p.thumbnails(ctx, j, v)
+	case "TRANSCODE":
+		return p.transcode(ctx, j, v)
+	case "HLS":
+		return p.master(ctx, j, v)
+	}
+	return permanent("unknown_job", "Unknown job type "+j.Type)
+}
+
+func (p *Pipeline) dir(videoID string) string { return filepath.Join(p.WorkDir, videoID) }
+
+func (p *Pipeline) policy() Policy {
+	if p.Policy.MaxDurationSec == 0 {
+		return DefaultPolicy()
+	}
+	return p.Policy
+}
+
+func (p *Pipeline) profile() Profile {
+	if p.Profile.Version == "" {
+		return DefaultProfile()
+	}
+	return p.Profile
+}
+
+// CleanupOutputs removes the partial HLS package of a failed video from storage and the local scratch
+// directory. It is idempotent and NEVER touches the original upload or generated thumbnails.
+func (p *Pipeline) CleanupOutputs(ctx context.Context, videoID string) error {
+	if _, err := p.Storage.DeletePrefix(ctx, "hls/"+videoID+"/"); err != nil {
+		return err
+	}
+	return os.RemoveAll(p.dir(videoID))
+}
+
+// verify proves an object landed in storage with the exact size we sent.
+func (p *Pipeline) verify(ctx context.Context, key string, size int64) error {
+	info, err := p.Storage.Head(ctx, key)
+	if err != nil {
+		return storageErr(ctx, err)
+	}
+	if info.Size != size {
+		return transient("storage_verify", fmt.Errorf("%s: stored %d bytes, sent %d", key, info.Size, size))
+	}
+	return nil
+}
+
+// original returns the local path of the original, downloading it when it is not cached. With
+// hash=true it always downloads fresh and returns the SHA-256 of what storage really holds.
+func (p *Pipeline) original(ctx context.Context, videoID string, v VideoRow, hash bool) (string, []byte, error) {
+	ext := strings.ToLower(filepath.Ext(v.OriginalKey))
+	d := p.dir(videoID)
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		return "", nil, transient("workdir", err)
+	}
+	path := filepath.Join(d, "original"+ext)
+	if !hash {
+		if st, err := os.Stat(path); err == nil && st.Size() == v.Size {
+			return path, nil, nil
+		}
+	}
+	free := p.Free
+	if free == nil {
+		free = freeBytes
+	}
+	if avail, err := free(d); err == nil {
+		if need := uint64(v.Size)*2 + p.policy().MinFreeBytes; avail < need {
+			// not the file's fault: wait for running jobs to free space instead of failing the upload
+			return "", nil, transient("disk_full", fmt.Errorf("%d bytes free, %d needed", avail, need))
+		}
+	}
+	tmp := path + ".part"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", nil, transient("workdir", err)
+	}
+	h := sha256.New()
+	n, err := p.Storage.Download(ctx, v.OriginalKey, io.MultiWriter(f, h))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		if errors.Is(err, storage.ErrNotFound) {
+			return "", nil, permanent("original_missing", "The uploaded file is missing")
+		}
+		if ctx.Err() != nil {
+			return "", nil, ctx.Err()
+		}
+		return "", nil, transient("download_failed", err)
+	}
+	if n != v.Size {
+		_ = os.Remove(tmp)
+		return "", nil, permanent("size_mismatch", "The uploaded file does not match its declared size")
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return "", nil, transient("workdir", err)
+	}
+	return path, h.Sum(nil), nil
+}
+
+func (p *Pipeline) metadata(ctx context.Context, j Job, v VideoRow) error {
+	path, sum, err := p.original(ctx, j.VideoID, v, true)
+	if err != nil {
+		return err
+	}
+	if p.Scanner != nil {
+		infected, detail, err := p.Scanner.Scan(ctx, path)
+		switch {
+		case err != nil && ctx.Err() != nil:
+			return ctx.Err()
+		case err != nil:
+			return transient("scanner_unavailable", err) // fail closed: retried, then the video FAILS
+		case infected:
+			if err := p.Store.RemoveVideo(ctx, j, detail); err != nil {
+				return err
+			}
+			p.Log.WarnContext(ctx, "scanner matched an upload", "video", j.VideoID, "detail", detail)
+			return &JobError{Code: "blocked_content", Message: "This video was removed by moderation", Permanent: true, Silent: true}
+		}
+	}
+	pr, err := ProbeFile(ctx, p.FFprobe, path, filepath.Ext(v.OriginalKey))
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var je *JobError
+		if errors.As(err, &je) {
+			return je
+		}
+		return transient("ffprobe_failed", err)
+	}
+	vt, secs, je := p.policy().Validate(pr, v.Size)
+	if je != nil {
+		return je
+	}
+	blocked, err := p.Store.SaveMetadata(ctx, j, MetadataResult{Probe: pr, VideoType: vt, Seconds: secs, SHA256: sum})
+	if err != nil {
+		return err
+	}
+	if blocked {
+		p.Log.WarnContext(ctx, "upload matched the content-hash blocklist", "video", j.VideoID)
+		return &JobError{Code: "blocked_content", Message: "This video was removed by moderation", Permanent: true, Silent: true}
+	}
+	return nil
+}
+
+func (p *Pipeline) thumbnails(ctx context.Context, j Job, v VideoRow) error {
+	meta, err := p.Store.Meta(ctx, j.VideoID)
+	if err != nil {
+		return err
+	}
+	path, _, err := p.original(ctx, j.VideoID, v, false)
+	if err != nil {
+		return err
+	}
+	prof := p.profile()
+	tdir := filepath.Join(p.dir(j.VideoID), "thumbs")
+	_ = os.RemoveAll(tdir)
+	if err := os.MkdirAll(tdir, 0o700); err != nil {
+		return transient("workdir", err)
+	}
+	type cand struct {
+		file string
+		w, h int
+		luma float64
+	}
+	var cands []cand
+	for i, at := range thumbTimes(float64(meta.Duration), prof.ThumbCount) {
+		out := filepath.Join(tdir, fmt.Sprintf("%d.jpg", i))
+		inspect := func() (cand, error) {
+			w, h, l, err := inspectJPEG(out)
+			return cand{file: out, w: w, h: h, luma: l}, err
+		}
+		err := runFFmpeg(ctx, p.FFmpeg, thumbArgs(path, out, at, prof.ThumbWidth), 2*time.Minute)
+		c, ierr := inspect()
+		if err != nil || ierr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			// seeking past the last decodable frame, or a corrupt frame: fall back to the first frame
+			if err2 := runFFmpeg(ctx, p.FFmpeg, thumbArgs(path, out, 0, prof.ThumbWidth), 2*time.Minute); err2 != nil {
+				return asJobError(err2)
+			}
+			if c, ierr = inspect(); ierr != nil {
+				return transient("thumbnail_invalid", ierr)
+			}
+		}
+		cands = append(cands, c)
+	}
+	lumas := make([]float64, len(cands))
+	for i, c := range cands {
+		lumas[i] = c.luma
+	}
+	primary := pickPrimary(lumas, len(cands)/2)
+
+	var items []ThumbOut
+	for _, c := range cands {
+		f, err := os.Open(c.file)
+		if err != nil {
+			return transient("thumbnail", err)
+		}
+		st, _ := f.Stat()
+		key := "thumbs/" + j.VideoID + "/" + auth.NewUUIDv7() + ".jpg"
+		err = p.Storage.Put(ctx, key, "image/jpeg", cacheImmutable, f, st.Size())
+		_ = f.Close()
+		if err != nil {
+			return storageErr(ctx, err)
+		}
+		if err := p.verify(ctx, key, st.Size()); err != nil {
+			return err
+		}
+		items = append(items, ThumbOut{Key: key, W: c.w, H: c.h})
+	}
+	old, err := p.Store.ReplaceThumbnails(ctx, j, items, primary)
+	if err != nil {
+		return err
+	}
+	for _, k := range old { // best effort: orphans are harmless, they are never referenced
+		_ = p.Storage.Delete(context.WithoutCancel(ctx), k)
+	}
+	return nil
+}
+
+func storageErr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return transient("storage_failed", err)
+}
+
+func (p *Pipeline) transcode(ctx context.Context, j Job, v VideoRow) error {
+	meta, err := p.Store.Meta(ctx, j.VideoID)
+	if err != nil {
+		return err
+	}
+	path, _, err := p.original(ctx, j.VideoID, v, false)
+	if err != nil {
+		return err
+	}
+	prof := p.profile()
+	began := time.Now()
+	pr := Probe{Width: meta.Width, Height: meta.Height, FPS: meta.FPS, HasAudio: meta.HasAudio}
+	// Start from a clean prefix: a previous failed attempt may have left segments behind.
+	if _, err := p.Storage.DeletePrefix(ctx, "hls/"+j.VideoID+"/"); err != nil {
+		return storageErr(ctx, err)
+	}
+	for _, r := range prof.Plan(meta.Width, meta.Height) {
+		out := filepath.Join(p.dir(j.VideoID), "hls", r.Name)
+		_ = os.RemoveAll(out)
+		if err := os.MkdirAll(out, 0o700); err != nil {
+			return transient("workdir", err)
+		}
+		if err := runFFmpeg(ctx, p.FFmpeg, hlsArgs(path, out, r, pr, prof, p.Threads), encodeTimeout(float64(meta.Duration))); err != nil {
+			return asJobErrorCtx(ctx, err)
+		}
+		// Validate the package locally BEFORE uploading anything: a broken encode is retried, never published.
+		if _, err := ValidatePlaylist(out, float64(meta.Duration), prof.SegmentSeconds); err != nil {
+			return transient("output_invalid", err)
+		}
+		prefix := "hls/" + j.VideoID + "/" + r.Name + "/"
+		n, err := p.uploadDir(ctx, out, prefix)
+		if err != nil {
+			return err
+		}
+		if err := p.Store.SaveVariant(ctx, j.VideoID, VariantOut{R: r, Key: prefix, Bytes: n}); err != nil {
+			return err
+		}
+		_ = os.RemoveAll(out) // free the disk before the next rendition
+	}
+	if err := p.Store.FinishTranscode(ctx, j); err != nil {
+		return err
+	}
+	if p.OnTranscoded != nil {
+		p.OnTranscoded(float64(meta.Duration), time.Since(began))
+	}
+	return nil
+}
+
+func asJobErrorCtx(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return asJobError(err)
+}
+
+// uploadDir uploads segments in parallel and the playlist last, so a playlist never points at a
+// segment that is not there yet. It returns the total bytes.
+func (p *Pipeline) uploadDir(ctx context.Context, dir, prefix string) (int64, error) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, transient("workdir", err)
+	}
+	var segs []string
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".ts") {
+			segs = append(segs, e.Name())
+		}
+	}
+	sort.Strings(segs)
+	if len(segs) == 0 {
+		return 0, transient("no_segments", errors.New("ffmpeg produced no segments"))
+	}
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		total int64
+		first error
+		sem   = make(chan struct{}, uploadWorkers)
+	)
+	put := func(name, ctype, cache string) error {
+		f, err := os.Open(filepath.Join(dir, name))
+		if err != nil {
+			return transient("workdir", err)
+		}
+		defer f.Close()
+		st, _ := f.Stat()
+		if err := p.Storage.Put(ctx, prefix+name, ctype, cache, f, st.Size()); err != nil {
+			return storageErr(ctx, err)
+		}
+		if err := p.verify(ctx, prefix+name, st.Size()); err != nil { // stored object verified before the video can complete
+			return err
+		}
+		mu.Lock()
+		total += st.Size()
+		mu.Unlock()
+		return nil
+	}
+	for _, s := range segs {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(s string) {
+			defer func() { <-sem; wg.Done() }()
+			mu.Lock()
+			failed := first != nil
+			mu.Unlock()
+			if failed {
+				return
+			}
+			if err := put(s, "video/mp2t", cacheImmutable); err != nil {
+				mu.Lock()
+				if first == nil {
+					first = err
+				}
+				mu.Unlock()
+			}
+		}(s)
+	}
+	wg.Wait()
+	if first != nil {
+		return 0, first
+	}
+	if err := put("index.m3u8", "application/vnd.apple.mpegurl", cachePlaylist); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (p *Pipeline) master(ctx context.Context, j Job, v VideoRow) error {
+	meta, err := p.Store.Meta(ctx, j.VideoID)
+	if err != nil {
+		return err
+	}
+	prof := p.profile()
+	plan := prof.Plan(meta.Width, meta.Height)
+	ready, err := p.Store.Variants(ctx, j.VideoID)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for _, r := range ready {
+		have[r] = true
+	}
+	for _, r := range plan {
+		if !have[r.Name] {
+			return transient("variants_missing", fmt.Errorf("rendition %s is not ready", r.Name))
+		}
+	}
+	key := "hls/" + j.VideoID + "/master.m3u8"
+	body := MasterPlaylist(plan, meta.HasAudio)
+	if err := ValidateMaster(body, plan); err != nil {
+		return transient("output_invalid", err)
+	}
+	if err := p.Storage.PutBytes(ctx, key, "application/vnd.apple.mpegurl", cachePlaylist, []byte(body)); err != nil {
+		return storageErr(ctx, err)
+	}
+	if err := p.verify(ctx, key, int64(len(body))); err != nil {
+		return err
+	}
+	creator, err := p.Store.FinishHLS(ctx, j, key, prof.Version)
+	if errors.Is(err, ErrBlocked) {
+		p.Log.WarnContext(ctx, "video matched the hash blocklist at finalize", "video", j.VideoID)
+		return &JobError{Code: "blocked_content", Message: "This video was removed by moderation", Permanent: true, Silent: true}
+	}
+	if err != nil {
+		return err
+	}
+	_ = os.RemoveAll(p.dir(j.VideoID))
+	if p.Notify != nil && creator != "" {
+		p.Notify(context.WithoutCancel(ctx), creator, j.VideoID)
+	}
+	return nil
+}

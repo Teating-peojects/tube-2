@@ -4,7 +4,7 @@ import { captionContentType } from "@/config/upload";
 import { xhrPut, type PartDone, type PutPart } from "@/lib/uploader";
 import type { ServerUploadStatus, UploadInit, UploadMeta } from "@/types";
 import { ApiError, api } from "./api";
-import { mockAsset, mockComplete, mockInit, mockPublish, mockPut, mockRetry, mockSaveDraft, mockStatus } from "./mock/studio";
+import { mockAsset, mockCancelProcessing, mockComplete, mockInit, mockPublish, mockPut, mockRetry, mockSaveDraft, mockStatus } from "./mock/studio";
 
 const send = (method: string, body?: unknown): RequestInit => ({ method, body: body === undefined ? undefined : JSON.stringify(body) });
 
@@ -17,6 +17,9 @@ export const completeUpload = (id: string, parts: PartDone[]): Promise<void> =>
 /** Reopens an upload that expired: same ids, a fresh multipart upload and new part URLs. 409 = not retryable. */
 export const retryUpload = (id: string): Promise<UploadInit> => (env.useMock ? mockRetry(id) : api(endpoints.upload.retry(id), send("POST")));
 export const abortUpload = (id: string): Promise<void> => (env.useMock ? Promise.resolve() : api(endpoints.upload.abort(id), send("DELETE")));
+/** Stops the processing of the creator's own video (it then shows as failed with "Processing was cancelled."). 409 = nothing to cancel. */
+export const cancelProcessing = (videoId: string): Promise<void> =>
+  env.useMock ? mockCancelProcessing(videoId) : api(endpoints.studio.cancelProcessing(videoId), send("POST"));
 export const getUploadStatus = (id: string): Promise<ServerUploadStatus> => (env.useMock ? mockStatus(id) : api(endpoints.upload.status(id)));
 
 /** Uploads a thumbnail or caption file through a presigned URL and returns its asset id. */

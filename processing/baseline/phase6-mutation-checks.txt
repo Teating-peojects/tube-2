@@ -1,0 +1,18 @@
+ok output validation skipped -> TestBrokenEncodeIsNeverUploaded: KILLED (test failed as it should) [5s]
+ok stored-object verification skipped -> TestStoredObjectsAreVerified: KILLED (test failed as it should) [2s]
+ok disk guard disabled -> TestPipelineWaitsInsteadOfFillingTheDisk: KILLED (test failed as it should) [2s]
+ok job-completion lease guard removed -> TestPGLeaseGuardAndStaleRequeue: KILLED (test failed as it should) [2s]
+ok cancel authorization removed -> TestProcessingCancelAuthorizationAndAudit: KILLED (test failed as it should) [3s]
+ok retry state check removed -> TestProcessingRetry: KILLED (test failed as it should) [3s]
+ok retry without a finished upload -> TestProcessingRetry: KILLED (test failed as it should) [3s]
+ok finalize blocklist re-check off -> TestBlocklistGrowingWhileProcessingIsCaughtAtFinalize: KILLED (test failed as it should) [2s]
+ok heartbeat ignores cancellation -> TestCancelKillsARunningJob: KILLED (test failed as it should) [42s]
+ok process-group kill removed -> TestExecScannerTimeoutKillsProcessGroup: KILLED (test failed as it should) [7s]
+ok internal error text stored -> TestFailureCodeReachesTheStatusQuery: KILLED (test failed as it should) [2s]
+ok diagnostics not sanitised -> TestSanitizeDiagHidesPathsAndControlChars: KILLED (test failed as it should) [2s]
+ok READY without PROCESSING check -> TestDuplicateJobsAndIllegalTransitionsAreRefused: KILLED (test failed as it should) [2s]
+ok duration limit not enforced -> TestValidate: KILLED (test failed as it should) [2s]
+ok unknown failure codes shown to users -> TestStatusExplainsWhyProcessingFailed: KILLED (test failed as it should) [2s]
+ok claim hands out jobs twice (no SKIP LOCKED) -> TestManyWorkersNeverShareAJob: KILLED (test failed as it should) [2s]
+
+SUMMARY: 16/16 mutants killed
